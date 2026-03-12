@@ -110,7 +110,8 @@ def list_frameworks():
 def analyze(req: AnalyzeRequest):
     """
     Analyze a sales transcript. Returns structured analysis + Strike Zone score.
-    This is the main endpoint. Calls Claude for analysis, then scores locally.
+    Auto-creates deal in Attio (if score >= 50) and sends Slack notification
+    using server default API keys.
     """
     if req.framework not in FRAMEWORK_NAMES:
         raise HTTPException(
@@ -132,6 +133,25 @@ def analyze(req: AnalyzeRequest):
         score_result = deal_scorer.score_deal(analysis)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+    # Auto-create deal if it's a sales conversation with sufficient score
+    deal_result = None
+    if analysis.get("is_sales_conversation") and score_result["total_score"] >= REVIEW_THRESHOLD:
+        try:
+            crm_client = crm_factory.get_client("attio")
+            deal_result = crm_client.create_deal(score_result, analysis, metadata, dry_run=False)
+            if deal_result:
+                logger.info(f"Auto-created Attio deal: {deal_result.get('deal_name')} (score: {score_result['total_score']})")
+        except Exception as e:
+            logger.warning(f"Auto deal creation failed: {e}")
+
+    # Slack notification
+    from config import SLACK_WEBHOOK_URL
+    if SLACK_WEBHOOK_URL:
+        try:
+            _send_slack_notification(SLACK_WEBHOOK_URL, score_result, analysis, metadata)
+        except Exception as e:
+            logger.warning(f"Slack notification failed: {e}")
 
     return AnalyzeResponse(
         analysis=analysis,
@@ -380,14 +400,53 @@ def _send_slack_notification(webhook_url: str, score_result: dict, analysis: dic
         logger.warning(f"Slack notification failed: {e}")
 
 
+@app.post("/webhook/fireflies")
+async def fireflies_webhook_default(request: Request, background_tasks: BackgroundTasks):
+    """
+    Default Fireflies webhook using server env var API keys.
+    No connection setup needed. Configure in Fireflies:
+    Settings > Integrations > Webhooks > Add webhook URL.
+    """
+    from config import FIREFLIES_API_KEY, ATTIO_API_KEY, SLACK_WEBHOOK_URL, DEFAULT_FRAMEWORK
+
+    body = await request.json()
+    logger.info(f"Fireflies default webhook received: {body}")
+
+    transcript_id = (
+        body.get("data", {}).get("transcriptId")
+        or body.get("data", {}).get("transcript_id")
+        or body.get("meetingId")
+        or body.get("meeting_id")
+        or body.get("transcriptId")
+        or body.get("transcript_id")
+    )
+
+    if not transcript_id:
+        logger.warning(f"Fireflies webhook: no transcript ID in payload: {body}")
+        return {"status": "ignored", "reason": "no transcript_id in payload"}
+
+    # Build a virtual connection from env vars
+    conn = {
+        "name": "Default",
+        "fireflies_api_key": FIREFLIES_API_KEY,
+        "crm": "attio",
+        "crm_api_key": ATTIO_API_KEY,
+        "framework": DEFAULT_FRAMEWORK,
+        "auto_create_threshold": AUTO_CREATE_THRESHOLD,
+        "slack_webhook_url": SLACK_WEBHOOK_URL,
+    }
+
+    logger.info(f"Processing Fireflies transcript {transcript_id} with default keys")
+    background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
+
+    return {"status": "processing", "transcript_id": transcript_id}
+
+
 @app.post("/webhook/fireflies/{webhook_id}")
 async def fireflies_webhook(webhook_id: str, request: Request, background_tasks: BackgroundTasks):
     """
-    Webhook endpoint for Fireflies. Configure in Fireflies:
-    Settings > Integrations > Webhooks > Add webhook URL.
-
-    Fireflies sends a POST with the meeting/transcript ID when a call ends.
-    We return 200 immediately and process in the background.
+    Fireflies webhook for a specific connection (multi-tenant).
+    Uses the connection's stored API keys.
     """
     conn = connections.get_connection(webhook_id)
     if not conn or not conn.get("active"):
@@ -395,7 +454,6 @@ async def fireflies_webhook(webhook_id: str, request: Request, background_tasks:
 
     body = await request.json()
 
-    # Fireflies webhook payload contains meetingId or transcriptId
     transcript_id = (
         body.get("data", {}).get("transcriptId")
         or body.get("data", {}).get("transcript_id")
