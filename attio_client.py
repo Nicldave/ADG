@@ -16,7 +16,7 @@ uses non-default names (ATTIO_DEAL_COMPANY_ATTR, ATTIO_DEAL_PEOPLE_ATTR).
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -57,34 +57,52 @@ def _attio_request(method: str, path: str, payload=None, params=None, api_key: O
     return response.json() if response.content else {}
 
 
+def _get_owner_id(api_key: Optional[str] = None) -> Optional[str]:
+    """Get the workspace member ID of the token owner (for deal owner field)."""
+    try:
+        data = _attio_request("GET", "/self", api_key=api_key)
+        return data.get("authorized_by_workspace_member_id")
+    except Exception:
+        return None
+
+
 # --- Company Lookup/Creation ---
 
 def find_or_create_company(company_name: str, industry: Optional[str] = None, api_key: Optional[str] = None) -> Optional[str]:
     """
-    Upsert a company in Attio by name. Returns record ID.
-    Uses assert (PUT) pattern — creates if not found, updates if found.
+    Find a company in Attio by name, or create one. Returns record ID.
     """
     if not company_name:
         return None
 
-    values = {"name": [{"value": company_name}]}
-    if industry:
-        # Attio uses free-text or select for industry depending on workspace config
-        values["categories"] = [{"value": industry}]
+    # Search first
+    try:
+        payload = {
+            "filter": {"name": {"$contains": company_name}},
+            "limit": 1,
+        }
+        data = _attio_request("POST", "/objects/companies/records/query", payload, api_key=api_key)
+        results = data.get("data", [])
+        if results:
+            record_id = results[0]["id"]["record_id"]
+            logger.info(f"Attio company found: {company_name} (ID: {record_id})")
+            return record_id
+    except Exception as e:
+        logger.warning(f"Attio company search failed for '{company_name}': {e}")
 
+    # Create if not found
     try:
         data = _attio_request(
-            "PUT",
+            "POST",
             "/objects/companies/records",
-            {"data": {"values": values}},
-            params={"matching_attribute": "name"},
+            {"data": {"values": {"name": [{"value": company_name}]}}},
             api_key=api_key,
         )
         record_id = data["data"]["id"]["record_id"]
-        logger.info(f"Attio company upserted: {company_name} (ID: {record_id})")
+        logger.info(f"Attio company created: {company_name} (ID: {record_id})")
         return record_id
     except Exception as e:
-        logger.warning(f"Attio company upsert failed for '{company_name}': {e}")
+        logger.warning(f"Attio company create failed for '{company_name}': {e}")
         return None
 
 
@@ -100,7 +118,7 @@ def find_contact_by_name(name: str, company_name: Optional[str] = None, api_key:
 
     try:
         payload = {
-            "filter": {"name": {"$str_contains": name}},
+            "filter": {"name": {"$contains": name}},
             "limit": 5,
         }
         data = _attio_request("POST", "/objects/people/records/query", payload, api_key=api_key)
@@ -163,19 +181,15 @@ def create_deal(
             if contact_id:
                 contact_ids.append((dm_name, contact_id))
 
-    # Close date
-    urgency = analysis.get("timeline_indicators", {}).get("urgency", "medium")
-    days_to_close = {"critical": 14, "high": 21, "medium": 30, "low": 60}.get(urgency, 30)
-    close_date = (datetime.now() + timedelta(days=days_to_close)).strftime("%Y-%m-%d")
-
     # Build deal values
-    description = _build_description(score_result, analysis, metadata)
+    # Owner is required — use the workspace member who authorized the API token
+    owner_id = _get_owner_id(api_key)
     values = {
         "name": [{"value": deal_name}],
         "stage": [{"status": stage}],
-        "close_date": [{"value": close_date}],
-        "description": [{"value": description}],
     }
+    if owner_id:
+        values["owner"] = [{"referenced_actor_type": "workspace-member", "referenced_actor_id": owner_id}]
 
     # Amount from budget indicators
     budget = analysis.get("budget_indicators", {})
@@ -184,7 +198,7 @@ def create_deal(
         if numbers:
             try:
                 amount = max(int(n) for n in numbers)
-                values["value"] = [{"currency_value": amount, "currency_code": "USD"}]
+                values["value"] = [{"currency_value": amount}]
             except Exception:
                 pass
 
@@ -203,10 +217,9 @@ def create_deal(
 
     try:
         data = _attio_request(
-            "PUT",
+            "POST",
             "/objects/deals/records",
             {"data": {"values": values}},
-            params={"matching_attribute": "name"},
             api_key=api_key,
         )
         deal_id = data["data"]["id"]["record_id"]
