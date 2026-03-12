@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 env_path = Path(__file__).parent / ".env"
 load_dotenv(env_path)
 
+# Database
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
 # API Keys
 FIREFLIES_API_KEY = os.getenv("FIREFLIES_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

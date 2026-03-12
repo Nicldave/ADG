@@ -26,10 +26,17 @@ import deal_scorer
 import crm as crm_factory
 import fireflies_client
 import connections
+import database
 from frameworks import FRAMEWORKS, FRAMEWORK_NAMES, get_framework
 from config import AUTO_CREATE_THRESHOLD, REVIEW_THRESHOLD
 
 logger = logging.getLogger(__name__)
+
+# Initialize PostgreSQL tables on startup (no-op if DATABASE_URL not set)
+try:
+    database.init_db()
+except Exception as e:
+    logger.warning(f"Database init skipped: {e}")
 
 app = FastAPI(
     title="Auto Deal Generator API",
@@ -983,12 +990,51 @@ FEEDBACK_FILE = Path(__file__).parent / ".feedback.json"
 
 
 def _load_feedback() -> list:
+    if database.is_available():
+        conn = database.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT deal_id, vote, note, timestamp FROM feedback ORDER BY timestamp DESC")
+            rows = cur.fetchall()
+            cur.close()
+            return [
+                {"deal_id": r[0], "vote": r[1], "note": r[2], "timestamp": r[3].isoformat()}
+                for r in rows
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to load feedback from DB: {e}")
+            return []
+        finally:
+            database.put_conn(conn)
+    # Fallback to JSON
     if FEEDBACK_FILE.exists():
         return json.loads(FEEDBACK_FILE.read_text())
     return []
 
 
-def _save_feedback(data: list):
+def _save_feedback(entry: dict):
+    """Save a single feedback entry."""
+    if database.is_available():
+        conn = database.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO feedback (deal_id, vote, note, timestamp) VALUES (%s, %s, %s, %s)",
+                (entry["deal_id"], entry["vote"], entry["note"], entry["timestamp"]),
+            )
+            conn.commit()
+            cur.close()
+            return
+        except Exception as e:
+            conn.rollback()
+            logger.warning(f"Failed to save feedback to DB: {e}")
+        finally:
+            database.put_conn(conn)
+    # Fallback to JSON
+    data = []
+    if FEEDBACK_FILE.exists():
+        data = json.loads(FEEDBACK_FILE.read_text())
+    data.append(entry)
     FEEDBACK_FILE.write_text(json.dumps(data, indent=2))
 
 
@@ -1007,15 +1053,13 @@ def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
     if vote not in valid_votes:
         vote = "not_a_deal"
 
-    feedback = _load_feedback()
     entry = {
         "deal_id": deal_id,
         "vote": vote,
         "note": note,
         "timestamp": datetime.now().isoformat(),
     }
-    feedback.append(entry)
-    _save_feedback(feedback)
+    _save_feedback(entry)
 
     logger.info(f"Feedback received: {deal_id} = {vote}")
 
