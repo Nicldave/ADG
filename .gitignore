@@ -1,0 +1,5 @@
+.env
+.last_run
+.processed_ids
+__pycache__/
+*.pyc
