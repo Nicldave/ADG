@@ -242,6 +242,31 @@ def create_deal(
         return None
 
 
+def update_deal_stage(deal_id: str, stage: str, api_key: Optional[str] = None) -> Optional[dict]:
+    """
+    Update a deal's stage in Attio.
+
+    Args:
+        deal_id: Attio record ID of the deal.
+        stage: Stage name (e.g., "Lost", "Discovery Scheduled").
+
+    Returns:
+        Updated deal data or None on failure.
+    """
+    try:
+        data = _attio_request(
+            "PATCH",
+            f"/objects/deals/records/{deal_id}",
+            {"data": {"values": {"stage": [{"status": stage}]}}},
+            api_key=api_key,
+        )
+        logger.info(f"Updated Attio deal {deal_id} to stage: {stage}")
+        return data
+    except Exception as e:
+        logger.error(f"Failed to update Attio deal {deal_id} stage to '{stage}': {e}")
+        return None
+
+
 def _build_description(score_result: dict, analysis: dict, metadata: Optional[dict]) -> str:
     """Build a description string for the Attio deal record."""
     pain_quotes = [

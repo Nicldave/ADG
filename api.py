@@ -995,10 +995,13 @@ def _save_feedback(data: list):
 @app.get("/feedback/{deal_id}")
 def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
     """
-    Record feedback on a deal assessment.
-    Called from Slack notification links. Returns a simple confirmation page.
+    Record feedback on a deal assessment and update the deal in Attio.
+    Called from Slack notification links.
 
-    vote options: good_deal, not_a_deal, needs_review
+    Actions:
+      - good_deal: Confirms the deal. No stage change.
+      - not_a_deal: Moves deal to "Lost" in Attio.
+      - needs_review: Moves deal to "Discovery Scheduled" in Attio.
     """
     valid_votes = {"good_deal", "not_a_deal", "needs_review"}
     if vote not in valid_votes:
@@ -1016,14 +1019,27 @@ def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
 
     logger.info(f"Feedback received: {deal_id} = {vote}")
 
-    # Return a simple HTML page so the Slack link opens something readable
-    emoji_map = {"good_deal": "thumbs up", "not_a_deal": "thumbs down", "needs_review": "review"}
+    # Update deal stage in Attio based on feedback
+    import attio_client
+    action_taken = "Feedback logged."
+    if vote == "not_a_deal":
+        result = attio_client.update_deal_stage(deal_id, "Lost")
+        action_taken = "Deal moved to Lost." if result else "Could not update deal stage."
+    elif vote == "needs_review":
+        from config import ATTIO_DEAL_STAGE_REVIEW
+        result = attio_client.update_deal_stage(deal_id, ATTIO_DEAL_STAGE_REVIEW)
+        action_taken = f"Deal moved to {ATTIO_DEAL_STAGE_REVIEW}." if result else "Could not update deal stage."
+    elif vote == "good_deal":
+        action_taken = "Deal confirmed. No changes made."
+
+    emoji_map = {"good_deal": "Confirmed", "not_a_deal": "Moved to Lost", "needs_review": "Moved to Review"}
     from fastapi.responses import HTMLResponse
     return HTMLResponse(
         f"<html><body style='font-family:sans-serif;text-align:center;padding:60px;'>"
         f"<h1>Feedback Recorded</h1>"
         f"<p>Deal: <b>{deal_id}</b></p>"
         f"<p>Your vote: <b>{emoji_map.get(vote, vote)}</b></p>"
+        f"<p>{action_taken}</p>"
         f"<p>Thanks! This helps DealSmart get smarter over time.</p>"
         f"</body></html>"
     )
