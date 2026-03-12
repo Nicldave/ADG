@@ -15,10 +15,11 @@ from config import FIREFLIES_API_KEY, FIREFLIES_GRAPHQL_URL
 logger = logging.getLogger(__name__)
 
 
-def _graphql_request(query: str, variables: Optional[dict] = None) -> dict:
+def _graphql_request(query: str, variables: Optional[dict] = None, api_key: Optional[str] = None) -> dict:
     """Execute a GraphQL request against Fireflies API."""
+    key = api_key or FIREFLIES_API_KEY
     headers = {
-        "Authorization": f"Bearer {FIREFLIES_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
     payload = {"query": query}
@@ -34,13 +35,14 @@ def _graphql_request(query: str, variables: Optional[dict] = None) -> dict:
     return data["data"]
 
 
-def list_transcripts(since: Optional[datetime] = None, limit: int = 20) -> list[dict]:
+def list_transcripts(since: Optional[datetime] = None, limit: int = 20, api_key: Optional[str] = None) -> list[dict]:
     """
     List recent transcripts from Fireflies.
 
     Args:
         since: Only return transcripts after this datetime. Defaults to last 7 days.
         limit: Max number of transcripts to return.
+        api_key: Optional Fireflies API key (overrides server default).
 
     Returns:
         List of transcript summaries with id, title, date, duration, participants.
@@ -58,7 +60,7 @@ def list_transcripts(since: Optional[datetime] = None, limit: int = 20) -> list[
         }
     }
     """
-    data = _graphql_request(query, {"limit": limit})
+    data = _graphql_request(query, {"limit": limit}, api_key=api_key)
     transcripts = data.get("transcripts", [])
 
     # Filter by date if specified
@@ -73,7 +75,7 @@ def list_transcripts(since: Optional[datetime] = None, limit: int = 20) -> list[
     return transcripts
 
 
-def get_transcript(transcript_id: str) -> dict:
+def get_transcript(transcript_id: str, api_key: Optional[str] = None) -> dict:
     """
     Get full transcript content with speaker labels and sentences.
 
@@ -112,7 +114,7 @@ def get_transcript(transcript_id: str) -> dict:
         }
     }
     """
-    data = _graphql_request(query, {"transcriptId": transcript_id})
+    data = _graphql_request(query, {"transcriptId": transcript_id}, api_key=api_key)
     transcript = data.get("transcript")
 
     if not transcript:

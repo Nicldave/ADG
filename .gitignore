@@ -1,5 +1,6 @@
 .env
 .last_run
 .processed_ids
+.connections.json
 __pycache__/
 *.pyc
