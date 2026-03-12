@@ -629,7 +629,7 @@ async def zoom_webhook(webhook_id: str, request: Request, background_tasks: Back
         import hashlib, hmac
         plain_token = body.get("payload", {}).get("plainToken", "")
         zoom_secret = conn.get("zoom_webhook_secret", "")
-        hash_value = hmac.new(
+        hash_value = hmac.HMAC(
             zoom_secret.encode(), plain_token.encode(), hashlib.sha256
         ).hexdigest()
         return {"plainToken": plain_token, "encryptedToken": hash_value}
