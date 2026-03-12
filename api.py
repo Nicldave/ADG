@@ -6,10 +6,12 @@ for external frontends (Lovable, custom React apps, etc.)
 Run: uvicorn api:app --reload --port 8000
 """
 
+import json
 import logging
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File, Form
@@ -149,7 +151,10 @@ def analyze(req: AnalyzeRequest):
     from config import SLACK_WEBHOOK_URL
     if SLACK_WEBHOOK_URL:
         try:
-            _send_slack_notification(SLACK_WEBHOOK_URL, score_result, analysis, metadata)
+            _send_slack_notification(
+                SLACK_WEBHOOK_URL, score_result, analysis, metadata,
+                deal_id=deal_result.get("deal_id") if deal_result else None,
+            )
         except Exception as e:
             logger.warning(f"Slack notification failed: {e}")
 
@@ -354,15 +359,17 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         )
 
         # 4. Create deal if score meets threshold
+        deal_id = None
         if score >= REVIEW_THRESHOLD:
             crm_client = crm_factory.get_client(crm_name)
             result = crm_client.create_deal(
                 score_result, analysis, metadata, dry_run=False, api_key=crm_key
             )
             if result:
+                deal_id = result.get("deal_id")
                 logger.info(
                     f"[{conn['name']}] Deal created: {result.get('deal_name')} "
-                    f"(ID: {result.get('deal_id')})"
+                    f"(ID: {deal_id})"
                 )
             else:
                 logger.warning(f"[{conn['name']}] Deal creation returned None for transcript {transcript_id}")
@@ -372,14 +379,17 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         # 5. Slack notification (if configured)
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
-            _send_slack_notification(slack_url, score_result, analysis, metadata)
+            _send_slack_notification(slack_url, score_result, analysis, metadata, deal_id=deal_id)
 
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed for transcript {transcript_id}: {e}")
 
 
-def _send_slack_notification(webhook_url: str, score_result: dict, analysis: dict, metadata: dict):
-    """Post a summary to Slack."""
+def _send_slack_notification(
+    webhook_url: str, score_result: dict, analysis: dict, metadata: dict,
+    deal_id: Optional[str] = None,
+):
+    """Post a summary to Slack with feedback links."""
     import requests as req_lib
     score = score_result["total_score"]
     rec = score_result["recommendation"].replace("_", " ").title()
@@ -388,11 +398,17 @@ def _send_slack_notification(webhook_url: str, score_result: dict, analysis: dic
 
     emoji = ":large_green_circle:" if score >= 70 else ":large_yellow_circle:" if score >= 50 else ":red_circle:"
 
+    base_url = _get_base_url()
+    feedback_id = deal_id or deal_name
+
     text = (
-        f"{emoji} *Deal Intelligence: {title}*\n"
+        f"{emoji} *DealSmart: {title}*\n"
         f"Score: *{score}/100* | Recommendation: *{rec}*\n"
         f"Deal: {deal_name}\n"
-        f"Insight: _{score_result.get('key_insight', 'N/A')}_"
+        f"Insight: _{score_result.get('key_insight', 'N/A')}_\n\n"
+        f":thumbsup: <{base_url}/feedback/{feedback_id}?vote=good_deal|Good Deal>  "
+        f":thumbsdown: <{base_url}/feedback/{feedback_id}?vote=not_a_deal|Not a Deal>  "
+        f":arrows_counterclockwise: <{base_url}/feedback/{feedback_id}?vote=needs_review|Needs Review>"
     )
     try:
         req_lib.post(webhook_url, json={"text": text}, timeout=10)
@@ -598,12 +614,14 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
             f"[{conn['name']}] '{metadata.get('title')}' scored {score}/100 ({recommendation})"
         )
 
+        deal_id = None
         if score >= REVIEW_THRESHOLD:
             crm_client = crm_factory.get_client(crm_name)
             result = crm_client.create_deal(
                 score_result, analysis, metadata, dry_run=False, api_key=crm_key
             )
             if result:
+                deal_id = result.get("deal_id")
                 logger.info(f"[{conn['name']}] Deal created: {result.get('deal_name')}")
             else:
                 logger.warning(f"[{conn['name']}] Deal creation returned None")
@@ -612,7 +630,7 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
 
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
-            _send_slack_notification(slack_url, score_result, analysis, metadata)
+            _send_slack_notification(slack_url, score_result, analysis, metadata, deal_id=deal_id)
 
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed: {e}")
@@ -957,6 +975,64 @@ async def google_meet_webhook(webhook_id: str, request: Request, background_task
     logger.info(f"[{conn['name']}] Google Meet webhook received")
     background_tasks.add_task(_process_google_meet_transcript, body, conn)
     return {"status": "processing"}
+
+
+# ── Feedback ─────────────────────────────────────────────────────────────────
+
+FEEDBACK_FILE = Path(__file__).parent / ".feedback.json"
+
+
+def _load_feedback() -> list:
+    if FEEDBACK_FILE.exists():
+        return json.loads(FEEDBACK_FILE.read_text())
+    return []
+
+
+def _save_feedback(data: list):
+    FEEDBACK_FILE.write_text(json.dumps(data, indent=2))
+
+
+@app.get("/feedback/{deal_id}")
+def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
+    """
+    Record feedback on a deal assessment.
+    Called from Slack notification links. Returns a simple confirmation page.
+
+    vote options: good_deal, not_a_deal, needs_review
+    """
+    valid_votes = {"good_deal", "not_a_deal", "needs_review"}
+    if vote not in valid_votes:
+        vote = "not_a_deal"
+
+    feedback = _load_feedback()
+    entry = {
+        "deal_id": deal_id,
+        "vote": vote,
+        "note": note,
+        "timestamp": datetime.now().isoformat(),
+    }
+    feedback.append(entry)
+    _save_feedback(feedback)
+
+    logger.info(f"Feedback received: {deal_id} = {vote}")
+
+    # Return a simple HTML page so the Slack link opens something readable
+    emoji_map = {"good_deal": "thumbs up", "not_a_deal": "thumbs down", "needs_review": "review"}
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        f"<html><body style='font-family:sans-serif;text-align:center;padding:60px;'>"
+        f"<h1>Feedback Recorded</h1>"
+        f"<p>Deal: <b>{deal_id}</b></p>"
+        f"<p>Your vote: <b>{emoji_map.get(vote, vote)}</b></p>"
+        f"<p>Thanks! This helps DealSmart get smarter over time.</p>"
+        f"</body></html>"
+    )
+
+
+@app.get("/feedback")
+def list_feedback():
+    """List all feedback entries. Useful for reviewing accuracy."""
+    return _load_feedback()
 
 
 # ── Health check ─────────────────────────────────────────────────────────────
