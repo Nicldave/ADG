@@ -12,7 +12,7 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -186,14 +186,24 @@ def create_deal(req: CreateDealRequest):
 
 # ── Connection management ────────────────────────────────────────────────────
 
+SUPPORTED_SOURCES = {"fireflies", "zoom", "gong", "teams", "google_meet"}
+
+
 class ConnectionRequest(BaseModel):
     name: str = Field(..., description="Team or user name")
-    fireflies_api_key: str = Field(..., description="Fireflies.ai API key")
+    transcript_source: str = Field("fireflies", description="Transcript source: fireflies, zoom, gong, teams, google_meet")
+    fireflies_api_key: Optional[str] = Field("", description="Fireflies.ai API key")
     crm: str = Field("attio", description="CRM: attio or hubspot")
     crm_api_key: str = Field(..., description="CRM API key")
     framework: str = Field("custom", description="Scoring framework")
     auto_create_threshold: int = Field(70, description="Score threshold for auto-creating deals")
     slack_webhook_url: Optional[str] = Field("", description="Slack webhook for notifications")
+    # Source-specific keys
+    zoom_webhook_secret: Optional[str] = Field("", description="Zoom webhook secret token")
+    gong_api_key: Optional[str] = Field("", description="Gong API key (access key)")
+    gong_api_secret: Optional[str] = Field("", description="Gong API secret (access key secret)")
+    teams_access_token: Optional[str] = Field("", description="Microsoft Graph API access token")
+    google_access_token: Optional[str] = Field("", description="Google OAuth access token")
 
 
 class ConnectionResponse(BaseModel):
@@ -202,42 +212,69 @@ class ConnectionResponse(BaseModel):
     name: str
     crm: str
     framework: str
+    transcript_source: str
     active: bool
+
+
+def _get_base_url() -> str:
+    base = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    if base:
+        return f"https://{base}"
+    return os.getenv("BASE_URL", "http://localhost:8000")
+
+
+# Map source names to webhook path prefixes
+SOURCE_WEBHOOK_PATHS = {
+    "fireflies": "fireflies",
+    "zoom": "zoom",
+    "gong": "gong",
+    "teams": "teams",
+    "google_meet": "google-meet",
+}
 
 
 @app.post("/connections", response_model=ConnectionResponse)
 def create_connection(req: ConnectionRequest):
     """
-    Register a new connection. Returns a webhook_url to configure in Fireflies.
-    Fireflies Settings > Integrations > Webhooks > paste this URL.
+    Register a new connection. Returns a webhook_url to configure in your transcript source.
+    Supports: Fireflies, Zoom, Gong, Microsoft Teams, Google Meet.
     """
     if req.crm not in ("hubspot", "attio"):
         raise HTTPException(status_code=400, detail=f"Unsupported CRM: '{req.crm}'")
     if req.framework not in FRAMEWORK_NAMES:
         raise HTTPException(status_code=400, detail=f"Unknown framework: '{req.framework}'")
+    if req.transcript_source not in SUPPORTED_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported source: '{req.transcript_source}'. Options: {', '.join(SUPPORTED_SOURCES)}",
+        )
 
     conn = connections.create_connection(
         name=req.name,
-        fireflies_api_key=req.fireflies_api_key,
+        transcript_source=req.transcript_source,
+        fireflies_api_key=req.fireflies_api_key or "",
         crm=req.crm,
         crm_api_key=req.crm_api_key,
         framework=req.framework,
         auto_create_threshold=req.auto_create_threshold,
         slack_webhook_url=req.slack_webhook_url or "",
+        zoom_webhook_secret=req.zoom_webhook_secret or "",
+        gong_api_key=req.gong_api_key or "",
+        gong_api_secret=req.gong_api_secret or "",
+        teams_access_token=req.teams_access_token or "",
+        google_access_token=req.google_access_token or "",
     )
 
-    base_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
-    if base_url:
-        base_url = f"https://{base_url}"
-    else:
-        base_url = os.getenv("BASE_URL", "http://localhost:8000")
+    base_url = _get_base_url()
+    source_path = SOURCE_WEBHOOK_PATHS.get(req.transcript_source, req.transcript_source)
 
     return ConnectionResponse(
         webhook_id=conn["webhook_id"],
-        webhook_url=f"{base_url}/webhook/fireflies/{conn['webhook_id']}",
+        webhook_url=f"{base_url}/webhook/{source_path}/{conn['webhook_id']}",
         name=conn["name"],
         crm=conn["crm"],
         framework=conn["framework"],
+        transcript_source=conn["transcript_source"],
         active=conn["active"],
     )
 
@@ -376,6 +413,492 @@ async def fireflies_webhook(webhook_id: str, request: Request, background_tasks:
     background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
 
     return {"status": "processing", "transcript_id": transcript_id}
+
+
+# ── File upload ───────────────────────────────────────────────────────────────
+
+def _parse_vtt(content: str) -> str:
+    """Parse WebVTT (.vtt) subtitle format into readable transcript."""
+    lines = content.strip().split("\n")
+    result = []
+    skip_next = False
+    for line in lines:
+        line = line.strip()
+        if line.startswith("WEBVTT") or line.startswith("NOTE") or not line:
+            continue
+        if "-->" in line:
+            skip_next = False
+            continue
+        if line.isdigit():
+            continue
+        result.append(line)
+    return "\n".join(result)
+
+
+def _parse_srt(content: str) -> str:
+    """Parse SRT subtitle format into readable transcript."""
+    lines = content.strip().split("\n")
+    result = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.isdigit() or "-->" in line:
+            continue
+        result.append(line)
+    return "\n".join(result)
+
+
+@app.post("/upload", response_model=AnalyzeResponse)
+async def upload_transcript(
+    file: UploadFile = File(...),
+    framework: str = Form("custom"),
+    meeting_title: Optional[str] = Form(None),
+    meeting_date: Optional[str] = Form(None),
+):
+    """
+    Upload a transcript file for analysis. Supports .txt, .vtt, .srt, .md formats.
+    Returns the same analysis + score as /analyze.
+    """
+    if framework not in FRAMEWORK_NAMES:
+        raise HTTPException(status_code=400, detail=f"Unknown framework: '{framework}'")
+
+    filename = file.filename or "upload"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
+
+    if ext not in ("txt", "vtt", "srt", "md", "text"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: .{ext}. Supported: .txt, .vtt, .srt, .md",
+        )
+
+    raw = await file.read()
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        content = raw.decode("latin-1")
+
+    if ext == "vtt":
+        text = _parse_vtt(content)
+    elif ext == "srt":
+        text = _parse_srt(content)
+    else:
+        text = content
+
+    if len(text.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Transcript too short (minimum 50 characters)")
+
+    metadata = {
+        "title": meeting_title or filename,
+        "date": meeting_date or datetime.now().isoformat(),
+        "source": f"upload:{ext}",
+        "participants": [],
+    }
+
+    try:
+        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
+        score_result = deal_scorer.score_deal(analysis)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+    return AnalyzeResponse(
+        analysis=analysis,
+        score_result=score_result,
+        score=score_result["total_score"],
+        recommendation=score_result["recommendation"],
+        deal_name=score_result.get("deal_name_suggestion", ""),
+        framework=framework,
+        key_insight=score_result.get("key_insight"),
+    )
+
+
+# ── Generic transcript processing (shared by all webhook sources) ─────────────
+
+def _process_transcript_text(text: str, metadata: dict, conn: dict):
+    """
+    Background task: analyze transcript text, score, create deal.
+    Used by all webhook sources after they extract the transcript text.
+    """
+    try:
+        crm_key = conn["crm_api_key"]
+        crm_name = conn["crm"]
+        framework = conn.get("framework", "custom")
+
+        if not text or len(text) < 50:
+            logger.warning(f"[{conn['name']}] Transcript too short ({len(text)} chars), skipping")
+            return
+
+        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
+
+        if not analysis.get("is_sales_conversation"):
+            logger.info(f"[{conn['name']}] Not a sales conversation, skipping deal creation")
+            return
+
+        score_result = deal_scorer.score_deal(analysis)
+        score = score_result["total_score"]
+        recommendation = score_result["recommendation"]
+
+        logger.info(
+            f"[{conn['name']}] '{metadata.get('title')}' scored {score}/100 ({recommendation})"
+        )
+
+        if score >= REVIEW_THRESHOLD:
+            crm_client = crm_factory.get_client(crm_name)
+            result = crm_client.create_deal(
+                score_result, analysis, metadata, dry_run=False, api_key=crm_key
+            )
+            if result:
+                logger.info(f"[{conn['name']}] Deal created: {result.get('deal_name')}")
+            else:
+                logger.warning(f"[{conn['name']}] Deal creation returned None")
+        else:
+            logger.info(f"[{conn['name']}] Score {score} below threshold {REVIEW_THRESHOLD}, no deal created")
+
+        slack_url = conn.get("slack_webhook_url")
+        if slack_url:
+            _send_slack_notification(slack_url, score_result, analysis, metadata)
+
+    except Exception as e:
+        logger.error(f"[{conn.get('name', '?')}] Pipeline failed: {e}")
+
+
+# ── Zoom webhook ──────────────────────────────────────────────────────────────
+
+def _process_zoom_recording(body: dict, conn: dict):
+    """
+    Background task: download Zoom cloud recording transcript, analyze, score, create deal.
+    Zoom sends recording.transcript_completed or recording.completed events.
+    """
+    import requests as req_lib
+
+    try:
+        payload = body.get("payload", {}).get("object", {})
+        topic = payload.get("topic", "Zoom Meeting")
+        start_time = payload.get("start_time", "")
+
+        # Find the transcript file in recording_files
+        recording_files = payload.get("recording_files", [])
+        transcript_url = None
+        for rf in recording_files:
+            if rf.get("file_type") == "TRANSCRIPT" or rf.get("recording_type") == "audio_transcript":
+                transcript_url = rf.get("download_url")
+                break
+
+        if not transcript_url:
+            logger.warning(f"[{conn['name']}] Zoom webhook: no transcript file found")
+            return
+
+        # Download transcript (Zoom provides a download token in the webhook)
+        download_token = body.get("download_token", "")
+        headers = {}
+        if download_token:
+            headers["Authorization"] = f"Bearer {download_token}"
+
+        resp = req_lib.get(transcript_url, headers=headers, timeout=60)
+        resp.raise_for_status()
+        content = resp.text
+
+        # Zoom transcripts are VTT format
+        text = _parse_vtt(content) if "WEBVTT" in content[:50] else content
+
+        metadata = {
+            "title": topic,
+            "date": start_time or datetime.now().isoformat(),
+            "source": "zoom",
+            "participants": [p.get("user_name", "") for p in payload.get("participant_audio_files", [])],
+        }
+
+        _process_transcript_text(text, metadata, conn)
+
+    except Exception as e:
+        logger.error(f"[{conn['name']}] Zoom processing failed: {e}")
+
+
+@app.post("/webhook/zoom/{webhook_id}")
+async def zoom_webhook(webhook_id: str, request: Request, background_tasks: BackgroundTasks):
+    """
+    Webhook for Zoom. Configure in Zoom Marketplace app:
+    Event subscriptions > Add > recording.transcript_completed
+    """
+    conn = connections.get_connection(webhook_id)
+    if not conn or not conn.get("active"):
+        raise HTTPException(status_code=404, detail="Invalid or inactive webhook")
+
+    body = await request.json()
+
+    # Zoom sends a validation challenge on first setup
+    if body.get("event") == "endpoint.url_validation":
+        import hashlib, hmac
+        plain_token = body.get("payload", {}).get("plainToken", "")
+        zoom_secret = conn.get("zoom_webhook_secret", "")
+        hash_value = hmac.new(
+            zoom_secret.encode(), plain_token.encode(), hashlib.sha256
+        ).hexdigest()
+        return {"plainToken": plain_token, "encryptedToken": hash_value}
+
+    event = body.get("event", "")
+    if event in ("recording.transcript_completed", "recording.completed"):
+        logger.info(f"[{conn['name']}] Zoom webhook received: {event}")
+        background_tasks.add_task(_process_zoom_recording, body, conn)
+        return {"status": "processing"}
+
+    return {"status": "ignored", "event": event}
+
+
+# ── Gong webhook ──────────────────────────────────────────────────────────────
+
+def _process_gong_call(body: dict, conn: dict):
+    """
+    Background task: pull Gong call transcript via API, analyze, score, create deal.
+    """
+    import requests as req_lib
+
+    try:
+        call_id = body.get("data", {}).get("callId") or body.get("callId", "")
+        if not call_id:
+            logger.warning(f"[{conn['name']}] Gong webhook: no callId found")
+            return
+
+        gong_key = conn.get("gong_api_key", "")
+        gong_secret = conn.get("gong_api_secret", "")
+        if not gong_key or not gong_secret:
+            logger.warning(f"[{conn['name']}] Gong API credentials not configured")
+            return
+
+        # Pull transcript from Gong API
+        resp = req_lib.post(
+            "https://api.gong.io/v2/calls/transcript",
+            auth=(gong_key, gong_secret),
+            json={"filter": {"callIds": [call_id]}},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        transcripts = data.get("callTranscripts", [])
+        if not transcripts:
+            logger.warning(f"[{conn['name']}] No transcript returned for Gong call {call_id}")
+            return
+
+        # Build text from Gong transcript format
+        lines = []
+        for entry in transcripts[0].get("transcript", []):
+            speaker = entry.get("speakerName", "Unknown")
+            sentences = " ".join(s.get("text", "") for s in entry.get("sentences", []))
+            if sentences:
+                lines.append(f"**{speaker}:** {sentences}")
+
+        text = "\n".join(lines)
+
+        # Get call metadata
+        meta_resp = req_lib.post(
+            "https://api.gong.io/v2/calls/extensive",
+            auth=(gong_key, gong_secret),
+            json={"filter": {"callIds": [call_id]}, "contentSelector": {"exposedFields": {"content": {"structure": True}}}},
+            timeout=30,
+        )
+        call_data = {}
+        if meta_resp.ok:
+            calls = meta_resp.json().get("calls", [])
+            if calls:
+                call_data = calls[0].get("metaData", {})
+
+        metadata = {
+            "title": call_data.get("title", f"Gong Call {call_id}"),
+            "date": call_data.get("started", datetime.now().isoformat()),
+            "source": "gong",
+            "participants": [p.get("name", "") for p in call_data.get("parties", [])],
+        }
+
+        _process_transcript_text(text, metadata, conn)
+
+    except Exception as e:
+        logger.error(f"[{conn['name']}] Gong processing failed: {e}")
+
+
+@app.post("/webhook/gong/{webhook_id}")
+async def gong_webhook(webhook_id: str, request: Request, background_tasks: BackgroundTasks):
+    """
+    Webhook for Gong. Configure in Gong:
+    Company Settings > Ecosystem > Webhooks > Add > call.transcript.ready
+    """
+    conn = connections.get_connection(webhook_id)
+    if not conn or not conn.get("active"):
+        raise HTTPException(status_code=404, detail="Invalid or inactive webhook")
+
+    body = await request.json()
+    logger.info(f"[{conn['name']}] Gong webhook received")
+    background_tasks.add_task(_process_gong_call, body, conn)
+    return {"status": "processing"}
+
+
+# ── Microsoft Teams webhook ───────────────────────────────────────────────────
+
+def _process_teams_transcript(body: dict, conn: dict):
+    """
+    Background task: pull Teams meeting transcript via Graph API.
+    """
+    import requests as req_lib
+
+    try:
+        resource = body.get("value", [{}])[0].get("resource", "")
+        # resource format: communications/callRecords/{id}
+        call_id = resource.split("/")[-1] if resource else ""
+
+        if not call_id:
+            logger.warning(f"[{conn['name']}] Teams webhook: no call ID found")
+            return
+
+        teams_token = conn.get("teams_access_token", "")
+        if not teams_token:
+            logger.warning(f"[{conn['name']}] Teams access token not configured")
+            return
+
+        headers = {"Authorization": f"Bearer {teams_token}"}
+
+        # Get transcript content
+        # First, list transcripts for the meeting
+        resp = req_lib.get(
+            f"https://graph.microsoft.com/v1.0/communications/callRecords/{call_id}/transcripts",
+            headers=headers,
+            timeout=30,
+        )
+
+        if not resp.ok:
+            logger.warning(f"[{conn['name']}] Teams transcript fetch failed: {resp.status_code}")
+            return
+
+        transcripts = resp.json().get("value", [])
+        if not transcripts:
+            return
+
+        # Download first transcript content
+        transcript_id = transcripts[0].get("id")
+        content_resp = req_lib.get(
+            f"https://graph.microsoft.com/v1.0/communications/callRecords/{call_id}/transcripts/{transcript_id}/content",
+            headers={**headers, "Accept": "text/vtt"},
+            timeout=30,
+        )
+
+        if not content_resp.ok:
+            return
+
+        text = _parse_vtt(content_resp.text) if "WEBVTT" in content_resp.text[:50] else content_resp.text
+
+        metadata = {
+            "title": body.get("value", [{}])[0].get("resourceData", {}).get("subject", "Teams Meeting"),
+            "date": datetime.now().isoformat(),
+            "source": "teams",
+            "participants": [],
+        }
+
+        _process_transcript_text(text, metadata, conn)
+
+    except Exception as e:
+        logger.error(f"[{conn['name']}] Teams processing failed: {e}")
+
+
+@app.post("/webhook/teams/{webhook_id}")
+async def teams_webhook(webhook_id: str, request: Request, background_tasks: BackgroundTasks):
+    """
+    Webhook for Microsoft Teams. Configure via Graph API subscriptions.
+    Subscribe to: communications/callRecords
+    """
+    conn = connections.get_connection(webhook_id)
+
+    # Teams sends a validation request with validationToken query param
+    validation_token = request.query_params.get("validationToken")
+    if validation_token:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(content=validation_token)
+
+    if not conn or not conn.get("active"):
+        raise HTTPException(status_code=404, detail="Invalid or inactive webhook")
+
+    body = await request.json()
+    logger.info(f"[{conn['name']}] Teams webhook received")
+    background_tasks.add_task(_process_teams_transcript, body, conn)
+    return {"status": "processing"}
+
+
+# ── Google Meet (via Google Workspace Events) ─────────────────────────────────
+
+def _process_google_meet_transcript(body: dict, conn: dict):
+    """
+    Background task: pull Google Meet transcript via Drive API.
+    Google Meet saves transcripts as Google Docs in the organizer's Drive.
+    """
+    import requests as req_lib
+
+    try:
+        event_data = body.get("protoPayload", {}) or body.get("data", {}) or body
+        # The transcript doc ID comes from the event
+        doc_id = (
+            event_data.get("documentId")
+            or event_data.get("transcript_doc_id")
+            or ""
+        )
+
+        google_token = conn.get("google_access_token", "")
+        if not google_token:
+            logger.warning(f"[{conn['name']}] Google access token not configured")
+            return
+
+        if doc_id:
+            # Fetch doc content from Drive
+            headers = {"Authorization": f"Bearer {google_token}"}
+            resp = req_lib.get(
+                f"https://docs.googleapis.com/v1/documents/{doc_id}",
+                headers=headers,
+                timeout=30,
+            )
+            if resp.ok:
+                doc = resp.json()
+                # Extract text from Google Doc structure
+                lines = []
+                for element in doc.get("body", {}).get("content", []):
+                    para = element.get("paragraph", {})
+                    for el in para.get("elements", []):
+                        text_run = el.get("textRun", {})
+                        if text_run.get("content", "").strip():
+                            lines.append(text_run["content"].strip())
+                text = "\n".join(lines)
+            else:
+                logger.warning(f"[{conn['name']}] Google Doc fetch failed: {resp.status_code}")
+                return
+        else:
+            # Fallback: transcript text might be in the webhook payload directly
+            text = event_data.get("transcript_text", "")
+
+        if not text:
+            logger.warning(f"[{conn['name']}] No transcript text from Google Meet")
+            return
+
+        metadata = {
+            "title": event_data.get("meeting_title", event_data.get("summary", "Google Meet")),
+            "date": event_data.get("start_time", datetime.now().isoformat()),
+            "source": "google_meet",
+            "participants": event_data.get("attendees", []),
+        }
+
+        _process_transcript_text(text, metadata, conn)
+
+    except Exception as e:
+        logger.error(f"[{conn['name']}] Google Meet processing failed: {e}")
+
+
+@app.post("/webhook/google-meet/{webhook_id}")
+async def google_meet_webhook(webhook_id: str, request: Request, background_tasks: BackgroundTasks):
+    """
+    Webhook for Google Meet transcripts.
+    Configure via Google Workspace Events API or Pub/Sub push subscription.
+    """
+    conn = connections.get_connection(webhook_id)
+    if not conn or not conn.get("active"):
+        raise HTTPException(status_code=404, detail="Invalid or inactive webhook")
+
+    body = await request.json()
+    logger.info(f"[{conn['name']}] Google Meet webhook received")
+    background_tasks.add_task(_process_google_meet_transcript, body, conn)
+    return {"status": "processing"}
 
 
 # ── Health check ─────────────────────────────────────────────────────────────
