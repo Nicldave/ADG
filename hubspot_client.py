@@ -132,17 +132,18 @@ def _call_timestamp_ms(call: dict) -> float:
     return 0.0
 
 
-def _headers() -> dict:
+def _headers(api_key: Optional[str] = None) -> dict:
+    key = api_key or HUBSPOT_API_KEY
     return {
-        "Authorization": f"Bearer {HUBSPOT_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
 
 
-def _hs_request(method: str, path: str, payload=None) -> dict:
+def _hs_request(method: str, path: str, payload=None, api_key: Optional[str] = None) -> dict:
     """Execute a HubSpot CRM API request. Payload can be dict or list."""
     url = f"{HUBSPOT_BASE_URL}{path}"
-    response = requests.request(method, url, headers=_headers(), json=payload)
+    response = requests.request(method, url, headers=_headers(api_key), json=payload)
 
     if response.status_code not in (200, 201):
         logger.error(f"HubSpot {method} {path} failed: {response.status_code} {response.text}")
@@ -153,7 +154,7 @@ def _hs_request(method: str, path: str, payload=None) -> dict:
 
 # --- Company Lookup ---
 
-def find_company(company_name: str) -> Optional[str]:
+def find_company(company_name: str, api_key: Optional[str] = None) -> Optional[str]:
     """
     Search for an existing company in HubSpot by name.
     Returns the company ID if found, None otherwise.
@@ -170,7 +171,7 @@ def find_company(company_name: str) -> Optional[str]:
         "limit": 1,
     }
     try:
-        data = _hs_request("POST", "/crm/v3/objects/companies/search", payload)
+        data = _hs_request("POST", "/crm/v3/objects/companies/search", payload, api_key=api_key)
         results = data.get("results", [])
         if results:
             company_id = results[0]["id"]
@@ -181,26 +182,26 @@ def find_company(company_name: str) -> Optional[str]:
     return None
 
 
-def create_company(company_name: str, industry: Optional[str] = None) -> str:
+def create_company(company_name: str, industry: Optional[str] = None, api_key: Optional[str] = None) -> str:
     """Create a new company in HubSpot. Returns the new company ID."""
     properties = {"name": company_name}
     if industry:
         properties["industry"] = industry
 
-    data = _hs_request("POST", "/crm/v3/objects/companies", {"properties": properties})
+    data = _hs_request("POST", "/crm/v3/objects/companies", {"properties": properties}, api_key=api_key)
     company_id = data["id"]
     logger.info(f"Created company: {company_name} (ID: {company_id})")
     return company_id
 
 
-def find_or_create_company(company_name: str, industry: Optional[str] = None) -> str:
+def find_or_create_company(company_name: str, industry: Optional[str] = None, api_key: Optional[str] = None) -> str:
     """Find an existing company or create a new one. Returns company ID."""
     if not company_name:
         return None
-    existing = find_company(company_name)
+    existing = find_company(company_name, api_key=api_key)
     if existing:
         return existing
-    return create_company(company_name, industry)
+    return create_company(company_name, industry, api_key=api_key)
 
 
 # --- Contact Lookup ---
@@ -214,7 +215,7 @@ def find_contact_by_email(email: str) -> Optional[str]:
         return None
 
 
-def find_contact_by_name(name: str, company_name: Optional[str] = None) -> Optional[str]:
+def find_contact_by_name(name: str, company_name: Optional[str] = None, api_key: Optional[str] = None) -> Optional[str]:
     """Search for a contact by name (and optionally company)."""
     filters = [{"propertyName": "firstname", "operator": "CONTAINS_TOKEN", "value": name.split()[0]}]
     if len(name.split()) > 1:
@@ -226,7 +227,7 @@ def find_contact_by_name(name: str, company_name: Optional[str] = None) -> Optio
         "limit": 5,
     }
     try:
-        data = _hs_request("POST", "/crm/v3/objects/contacts/search", payload)
+        data = _hs_request("POST", "/crm/v3/objects/contacts/search", payload, api_key=api_key)
         results = data.get("results", [])
         if results:
             # If company specified, try to match
@@ -347,6 +348,7 @@ def create_deal(
     analysis: dict,
     metadata: Optional[dict] = None,
     dry_run: bool = False,
+    api_key: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Create a HubSpot deal from a scored transcript analysis.
@@ -374,7 +376,7 @@ def create_deal(
     company_id = None
     if company.get("name"):
         company_id = find_or_create_company(
-            company["name"], company.get("industry")
+            company["name"], company.get("industry"), api_key=api_key
         )
 
     # Build deal properties
@@ -382,7 +384,7 @@ def create_deal(
 
     # Create the deal
     deal_data = _hs_request(
-        "POST", "/crm/v3/objects/deals", {"properties": properties}
+        "POST", "/crm/v3/objects/deals", {"properties": properties}, api_key=api_key
     )
     deal_id = deal_data["id"]
     logger.info(f"Created deal: {deal_name} (ID: {deal_id})")
@@ -395,6 +397,7 @@ def create_deal(
                 "PUT",
                 f"/crm/v4/objects/deal/{deal_id}/associations/company/{company_id}",
                 [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 5}],
+                api_key=api_key,
             )
             logger.info(f"Associated deal {deal_id} with company {company_id}")
         except Exception as e:
@@ -408,13 +411,14 @@ def create_deal(
         name = dm.get("name")
         if not name:
             continue
-        contact_id = find_contact_by_name(name, company.get("name"))
+        contact_id = find_contact_by_name(name, company.get("name"), api_key=api_key)
         if contact_id:
             try:
                 _hs_request(
                     "PUT",
                     f"/crm/v4/objects/deal/{deal_id}/associations/contact/{contact_id}",
                     [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 3}],
+                    api_key=api_key,
                 )
                 associated_contacts.append(contact_id)
                 logger.info(f"Associated contact {name} ({contact_id}) with deal")

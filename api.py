@@ -53,6 +53,7 @@ class CreateDealRequest(BaseModel):
     score_result: dict = Field(..., description="Output from /analyze")
     crm: str = Field("attio", description="CRM target: hubspot or attio")
     dry_run: bool = Field(True, description="If true, simulates without creating")
+    crm_api_key: Optional[str] = Field(None, description="User's own CRM API key. If omitted, uses server default.")
 
 
 class AnalyzeResponse(BaseModel):
@@ -159,7 +160,8 @@ def create_deal(req: CreateDealRequest):
 
     try:
         result = crm_client.create_deal(
-            req.score_result, req.analysis, metadata, dry_run=req.dry_run
+            req.score_result, req.analysis, metadata, dry_run=req.dry_run,
+            api_key=req.crm_api_key,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Deal creation failed: {str(e)}")

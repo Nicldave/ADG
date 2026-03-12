@@ -35,18 +35,19 @@ logger = logging.getLogger(__name__)
 
 # --- Internal helpers ---
 
-def _headers() -> dict:
+def _headers(api_key: Optional[str] = None) -> dict:
+    key = api_key or ATTIO_API_KEY
     return {
-        "Authorization": f"Bearer {ATTIO_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
 
 
-def _attio_request(method: str, path: str, payload=None, params=None) -> dict:
+def _attio_request(method: str, path: str, payload=None, params=None, api_key: Optional[str] = None) -> dict:
     """Execute an Attio API v2 request."""
     url = f"{ATTIO_BASE_URL}{path}"
     response = requests.request(
-        method, url, headers=_headers(), json=payload, params=params, timeout=30
+        method, url, headers=_headers(api_key), json=payload, params=params, timeout=30
     )
     if response.status_code not in (200, 201):
         logger.error(
@@ -58,7 +59,7 @@ def _attio_request(method: str, path: str, payload=None, params=None) -> dict:
 
 # --- Company Lookup/Creation ---
 
-def find_or_create_company(company_name: str, industry: Optional[str] = None) -> Optional[str]:
+def find_or_create_company(company_name: str, industry: Optional[str] = None, api_key: Optional[str] = None) -> Optional[str]:
     """
     Upsert a company in Attio by name. Returns record ID.
     Uses assert (PUT) pattern — creates if not found, updates if found.
@@ -77,6 +78,7 @@ def find_or_create_company(company_name: str, industry: Optional[str] = None) ->
             "/objects/companies/records",
             {"data": {"values": values}},
             params={"matching_attribute": "name"},
+            api_key=api_key,
         )
         record_id = data["data"]["id"]["record_id"]
         logger.info(f"Attio company upserted: {company_name} (ID: {record_id})")
@@ -88,7 +90,7 @@ def find_or_create_company(company_name: str, industry: Optional[str] = None) ->
 
 # --- Contact (People) Lookup ---
 
-def find_contact_by_name(name: str, company_name: Optional[str] = None) -> Optional[str]:
+def find_contact_by_name(name: str, company_name: Optional[str] = None, api_key: Optional[str] = None) -> Optional[str]:
     """
     Search for a person in Attio by name. Returns record ID or None.
     Uses the records query endpoint with a name filter.
@@ -101,7 +103,7 @@ def find_contact_by_name(name: str, company_name: Optional[str] = None) -> Optio
             "filter": {"name": {"$str_contains": name}},
             "limit": 5,
         }
-        data = _attio_request("POST", "/objects/people/records/query", payload)
+        data = _attio_request("POST", "/objects/people/records/query", payload, api_key=api_key)
         results = data.get("data", [])
         if results:
             return results[0]["id"]["record_id"]
@@ -117,6 +119,7 @@ def create_deal(
     analysis: dict,
     metadata: Optional[dict] = None,
     dry_run: bool = False,
+    api_key: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Create an Attio deal from a scored transcript analysis.
@@ -148,7 +151,7 @@ def create_deal(
     company = analysis.get("prospect_company", {})
     company_id = None
     if company.get("name"):
-        company_id = find_or_create_company(company["name"], company.get("industry"))
+        company_id = find_or_create_company(company["name"], company.get("industry"), api_key=api_key)
 
     # Find contacts before deal creation (so we can include in initial PUT)
     decision_makers = analysis.get("decision_makers", [])
@@ -156,7 +159,7 @@ def create_deal(
     for dm in decision_makers[:3]:
         dm_name = dm.get("name")
         if dm_name:
-            contact_id = find_contact_by_name(dm_name, company.get("name"))
+            contact_id = find_contact_by_name(dm_name, company.get("name"), api_key=api_key)
             if contact_id:
                 contact_ids.append((dm_name, contact_id))
 
@@ -204,6 +207,7 @@ def create_deal(
             "/objects/deals/records",
             {"data": {"values": values}},
             params={"matching_attribute": "name"},
+            api_key=api_key,
         )
         deal_id = data["data"]["id"]["record_id"]
         logger.info(f"Created Attio deal: {deal_name} (ID: {deal_id})")
