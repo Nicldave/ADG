@@ -14,8 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File, Form, Depends, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 # Add this directory to path so local modules resolve
@@ -31,6 +32,23 @@ from frameworks import FRAMEWORKS, FRAMEWORK_NAMES, get_framework
 from config import AUTO_CREATE_THRESHOLD, REVIEW_THRESHOLD
 
 logger = logging.getLogger(__name__)
+
+# ── API Key Authentication ───────────────────────────────────────────────────
+# Set DEALSMART_API_KEY env var on Railway. Share this key with clients.
+# Webhooks are excluded (they use unique IDs for security).
+
+DEALSMART_API_KEY = os.getenv("DEALSMART_API_KEY", "")
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def require_api_key(api_key: str = Security(api_key_header)):
+    """Dependency that enforces API key auth on protected endpoints."""
+    if not DEALSMART_API_KEY:
+        return  # No key configured = auth disabled (dev mode)
+    if api_key != DEALSMART_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
 
 # Initialize PostgreSQL tables on startup (no-op if DATABASE_URL not set)
 try:
@@ -98,7 +116,7 @@ class FrameworkInfo(BaseModel):
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
-@app.get("/frameworks", response_model=list[FrameworkInfo])
+@app.get("/frameworks", response_model=list[FrameworkInfo], dependencies=[Depends(require_api_key)])
 def list_frameworks():
     """List all available scoring frameworks with their categories and weights."""
     result = []
@@ -115,7 +133,7 @@ def list_frameworks():
     return result
 
 
-@app.post("/analyze", response_model=AnalyzeResponse)
+@app.post("/analyze", response_model=AnalyzeResponse, dependencies=[Depends(require_api_key)])
 def analyze(req: AnalyzeRequest):
     """
     Analyze a sales transcript. Returns structured analysis + Strike Zone score.
@@ -176,7 +194,7 @@ def analyze(req: AnalyzeRequest):
     )
 
 
-@app.post("/create-deal", response_model=CreateDealResponse)
+@app.post("/create-deal", response_model=CreateDealResponse, dependencies=[Depends(require_api_key)])
 def create_deal(req: CreateDealRequest):
     """
     Create a deal in the selected CRM from a previously analyzed transcript.
@@ -265,7 +283,7 @@ SOURCE_WEBHOOK_PATHS = {
 }
 
 
-@app.post("/connections", response_model=ConnectionResponse)
+@app.post("/connections", response_model=ConnectionResponse, dependencies=[Depends(require_api_key)])
 def create_connection(req: ConnectionRequest):
     """
     Register a new connection. Returns a webhook_url to configure in your transcript source.
@@ -311,13 +329,13 @@ def create_connection(req: ConnectionRequest):
     )
 
 
-@app.get("/connections")
+@app.get("/connections", dependencies=[Depends(require_api_key)])
 def list_all_connections():
     """List all registered connections (keys masked)."""
     return connections.list_connections()
 
 
-@app.delete("/connections/{webhook_id}")
+@app.delete("/connections/{webhook_id}", dependencies=[Depends(require_api_key)])
 def delete_connection(webhook_id: str):
     """Remove a connection."""
     if connections.delete_connection(webhook_id):
@@ -528,7 +546,7 @@ def _parse_srt(content: str) -> str:
     return "\n".join(result)
 
 
-@app.post("/upload", response_model=AnalyzeResponse)
+@app.post("/upload", response_model=AnalyzeResponse, dependencies=[Depends(require_api_key)])
 async def upload_transcript(
     file: UploadFile = File(...),
     framework: str = Form("custom"),
@@ -1089,7 +1107,7 @@ def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
     )
 
 
-@app.get("/feedback")
+@app.get("/feedback", dependencies=[Depends(require_api_key)])
 def list_feedback():
     """List all feedback entries. Useful for reviewing accuracy."""
     return _load_feedback()
