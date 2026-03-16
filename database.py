@@ -89,6 +89,22 @@ def init_db():
                 timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS scored_deals (
+                id SERIAL PRIMARY KEY,
+                deal_id TEXT,
+                deal_name TEXT NOT NULL,
+                meeting_title TEXT,
+                score INTEGER NOT NULL,
+                recommendation TEXT NOT NULL,
+                framework TEXT DEFAULT 'custom',
+                breakdown JSONB DEFAULT '{}',
+                analysis JSONB DEFAULT '{}',
+                metadata JSONB DEFAULT '{}',
+                key_insight TEXT DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
         conn.commit()
         cur.close()
         logger.info("PostgreSQL tables initialized")

@@ -172,6 +172,12 @@ def analyze(req: AnalyzeRequest):
         except Exception as e:
             logger.warning(f"Auto deal creation failed: {e}")
 
+    # Log scored deal
+    _save_scored_deal(
+        score_result, analysis, metadata,
+        deal_id=deal_result.get("deal_id") if deal_result else None,
+    )
+
     # Slack notification
     from config import SLACK_WEBHOOK_URL
     if SLACK_WEBHOOK_URL:
@@ -401,6 +407,9 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         else:
             logger.info(f"[{conn['name']}] Score {score} below threshold {REVIEW_THRESHOLD}, no deal created")
 
+        # 4b. Log scored deal
+        _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
+
         # 5. Slack notification (if configured)
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
@@ -426,10 +435,20 @@ def _send_slack_notification(
     base_url = _get_base_url()
     feedback_id = deal_id or deal_name
 
+    # Build score breakdown line
+    breakdown = score_result.get("breakdown", {})
+    framework_name = score_result.get("framework", "custom").upper()
+    breakdown_parts = []
+    for cat, data in breakdown.items():
+        label = data.get("label", cat)
+        breakdown_parts.append(f"{label}: {data['score']}/{data['max']}")
+    breakdown_line = " | ".join(breakdown_parts) if breakdown_parts else "N/A"
+
     text = (
         f"{emoji} *DealSmart: {title}*\n"
-        f"Score: *{score}/100* | Recommendation: *{rec}*\n"
+        f"Score: *{score}/100* ({framework_name}) | Recommendation: *{rec}*\n"
         f"Deal: {deal_name}\n"
+        f"Breakdown: {breakdown_line}\n"
         f"Insight: _{score_result.get('key_insight', 'N/A')}_\n\n"
         f":thumbsup: <{base_url}/feedback/{feedback_id}?vote=good_deal|Good Deal>  "
         f":thumbsdown: <{base_url}/feedback/{feedback_id}?vote=not_a_deal|Not a Deal>  "
@@ -652,6 +671,8 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
                 logger.warning(f"[{conn['name']}] Deal creation returned None")
         else:
             logger.info(f"[{conn['name']}] Score {score} below threshold {REVIEW_THRESHOLD}, no deal created")
+
+        _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
 
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
@@ -1111,6 +1132,97 @@ def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
 def list_feedback():
     """List all feedback entries. Useful for reviewing accuracy."""
     return _load_feedback()
+
+
+# ── Deal Log (scored deals history) ──────────────────────────────────────────
+
+DEALS_LOG_FILE = Path(__file__).parent / ".deals_log.json"
+
+
+def _save_scored_deal(score_result: dict, analysis: dict, metadata: dict, deal_id: Optional[str] = None):
+    """Save a scored deal to the log for history tracking."""
+    entry = {
+        "deal_id": deal_id,
+        "deal_name": score_result.get("deal_name_suggestion", "Unknown"),
+        "meeting_title": metadata.get("title", "Unknown"),
+        "score": score_result["total_score"],
+        "recommendation": score_result["recommendation"],
+        "framework": score_result.get("framework", "custom"),
+        "breakdown": score_result.get("breakdown", {}),
+        "key_insight": score_result.get("key_insight", ""),
+        "company": analysis.get("prospect_company", {}).get("name", ""),
+        "participants": metadata.get("participants", []),
+        "created_at": datetime.now().isoformat(),
+    }
+
+    if database.is_available():
+        conn = database.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO scored_deals
+                   (deal_id, deal_name, meeting_title, score, recommendation, framework, breakdown, analysis, metadata, key_insight)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    deal_id, entry["deal_name"], entry["meeting_title"],
+                    entry["score"], entry["recommendation"], entry["framework"],
+                    json.dumps(entry["breakdown"]), json.dumps({"company": entry["company"]}),
+                    json.dumps({"participants": entry["participants"]}), entry["key_insight"],
+                ),
+            )
+            conn.commit()
+            cur.close()
+            return
+        except Exception as e:
+            conn.rollback()
+            logger.warning(f"Failed to save deal to DB: {e}")
+        finally:
+            database.put_conn(conn)
+
+    # Fallback to JSON
+    data = []
+    if DEALS_LOG_FILE.exists():
+        data = json.loads(DEALS_LOG_FILE.read_text())
+    data.append(entry)
+    DEALS_LOG_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _load_deals_log() -> list:
+    if database.is_available():
+        conn = database.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT deal_id, deal_name, meeting_title, score, recommendation,
+                          framework, breakdown, key_insight, created_at
+                   FROM scored_deals ORDER BY created_at DESC"""
+            )
+            rows = cur.fetchall()
+            cur.close()
+            return [
+                {
+                    "deal_id": r[0], "deal_name": r[1], "meeting_title": r[2],
+                    "score": r[3], "recommendation": r[4], "framework": r[5],
+                    "breakdown": r[6] if isinstance(r[6], dict) else json.loads(r[6] or "{}"),
+                    "key_insight": r[7], "created_at": r[8].isoformat(),
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to load deals from DB: {e}")
+            return []
+        finally:
+            database.put_conn(conn)
+
+    if DEALS_LOG_FILE.exists():
+        return json.loads(DEALS_LOG_FILE.read_text())
+    return []
+
+
+@app.get("/deals", dependencies=[Depends(require_api_key)])
+def list_deals():
+    """List all scored deals with their breakdown. Used by the Lovable UI for the deal log."""
+    return _load_deals_log()
 
 
 # ── Health check ─────────────────────────────────────────────────────────────
