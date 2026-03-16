@@ -161,22 +161,29 @@ def analyze(req: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-    # Auto-create deal if it's a sales conversation with sufficient score
+    # Check for existing deal and previous scores
+    company_name = analysis.get("prospect_company", {}).get("name", "")
+    existing_deal = _find_existing_deal(company_name, "attio") if company_name else None
+    previous_scores = _get_previous_scores(company_name) if company_name else []
+
+    # Auto-create deal if it's a sales conversation with sufficient score (and no existing deal)
     deal_result = None
-    if analysis.get("is_sales_conversation") and score_result["total_score"] >= REVIEW_THRESHOLD:
+    deal_id = None
+    if existing_deal:
+        deal_id = existing_deal.get("deal_id")
+        logger.info(f"Existing deal found for '{company_name}', skipping creation")
+    elif analysis.get("is_sales_conversation") and score_result["total_score"] >= REVIEW_THRESHOLD:
         try:
             crm_client = crm_factory.get_client("attio")
             deal_result = crm_client.create_deal(score_result, analysis, metadata, dry_run=False)
             if deal_result:
+                deal_id = deal_result.get("deal_id")
                 logger.info(f"Auto-created Attio deal: {deal_result.get('deal_name')} (score: {score_result['total_score']})")
         except Exception as e:
             logger.warning(f"Auto deal creation failed: {e}")
 
     # Log scored deal
-    _save_scored_deal(
-        score_result, analysis, metadata,
-        deal_id=deal_result.get("deal_id") if deal_result else None,
-    )
+    _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
 
     # Slack notification
     from config import SLACK_WEBHOOK_URL
@@ -184,7 +191,7 @@ def analyze(req: AnalyzeRequest):
         try:
             _send_slack_notification(
                 SLACK_WEBHOOK_URL, score_result, analysis, metadata,
-                deal_id=deal_result.get("deal_id") if deal_result else None,
+                deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
             )
         except Exception as e:
             logger.warning(f"Slack notification failed: {e}")
@@ -383,15 +390,27 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         score_result = deal_scorer.score_deal(analysis)
         score = score_result["total_score"]
         recommendation = score_result["recommendation"]
+        company_name = analysis.get("prospect_company", {}).get("name", "")
 
         logger.info(
             f"[{conn['name']}] Transcript '{metadata.get('title')}' scored {score}/100 "
             f"({recommendation})"
         )
 
-        # 4. Create deal if score meets threshold
+        # 4. Check for existing deal and previous scores (follow-up intelligence)
+        existing_deal = _find_existing_deal(company_name, crm_name, crm_key)
+        previous_scores = _get_previous_scores(company_name)
+
         deal_id = None
-        if score >= REVIEW_THRESHOLD:
+        if existing_deal:
+            # Deal already exists, don't create a duplicate
+            deal_id = existing_deal.get("deal_id")
+            logger.info(
+                f"[{conn['name']}] Existing deal found for '{company_name}': {existing_deal.get('deal_name')} "
+                f"(call #{len(previous_scores) + 1})"
+            )
+        elif score >= REVIEW_THRESHOLD:
+            # No existing deal, score meets threshold, create new
             crm_client = crm_factory.get_client(crm_name)
             result = crm_client.create_deal(
                 score_result, analysis, metadata, dry_run=False, api_key=crm_key
@@ -413,17 +432,58 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         # 5. Slack notification (if configured)
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
-            _send_slack_notification(slack_url, score_result, analysis, metadata, deal_id=deal_id)
+            _send_slack_notification(
+                slack_url, score_result, analysis, metadata,
+                deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
+            )
 
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed for transcript {transcript_id}: {e}")
 
 
+def _get_previous_scores(company_name: str) -> list:
+    """Look up previous scored calls for a company. Returns list of {score, meeting_title, created_at}."""
+    if not company_name or not database.is_available():
+        return []
+    conn = database.get_conn()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT score, meeting_title, deal_id, created_at
+               FROM scored_deals
+               WHERE LOWER(company_name) = LOWER(%s)
+               ORDER BY created_at ASC""",
+            (company_name,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return [
+            {"score": r[0], "meeting_title": r[1], "deal_id": r[2], "created_at": r[3].isoformat()}
+            for r in rows
+        ]
+    except Exception as e:
+        logger.warning(f"Failed to get previous scores for '{company_name}': {e}")
+        return []
+    finally:
+        database.put_conn(conn)
+
+
+def _find_existing_deal(company_name: str, crm_name: str, crm_key: Optional[str] = None) -> Optional[dict]:
+    """Check if a deal already exists in the CRM for this company."""
+    if crm_name != "attio" or not company_name:
+        return None
+    import attio_client
+    return attio_client.find_deal_by_company(company_name, api_key=crm_key)
+
+
 def _send_slack_notification(
     webhook_url: str, score_result: dict, analysis: dict, metadata: dict,
-    deal_id: Optional[str] = None,
+    deal_id: Optional[str] = None, existing_deal: Optional[dict] = None,
+    previous_scores: Optional[list] = None,
 ):
-    """Post a summary to Slack with feedback links."""
+    """Post a summary to Slack with feedback links and follow-up context."""
     import requests as req_lib
     score = score_result["total_score"]
     rec = score_result["recommendation"].replace("_", " ").title()
@@ -444,8 +504,18 @@ def _send_slack_notification(
         breakdown_parts.append(f"{label}: {data['score']}/{data['max']}")
     breakdown_line = " | ".join(breakdown_parts) if breakdown_parts else "N/A"
 
+    # Follow-up context
+    followup_line = ""
+    if existing_deal:
+        followup_line = f":repeat: *Follow-up call* (existing deal: {existing_deal.get('deal_name', '?')}, stage: {existing_deal.get('stage', '?')})\n"
+    if previous_scores:
+        prev_scores_str = " > ".join(str(p["score"]) for p in previous_scores)
+        call_num = len(previous_scores) + 1
+        followup_line += f":chart_with_upwards_trend: Call #{call_num} | Score history: {prev_scores_str} > *{score}*\n"
+
     text = (
         f"{emoji} *DealSmart: {title}*\n"
+        f"{followup_line}"
         f"Score: *{score}/100* ({framework_name}) | Recommendation: *{rec}*\n"
         f"Deal: {deal_name}\n"
         f"Breakdown: {breakdown_line}\n"
@@ -653,13 +723,24 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
         score_result = deal_scorer.score_deal(analysis)
         score = score_result["total_score"]
         recommendation = score_result["recommendation"]
+        company_name = analysis.get("prospect_company", {}).get("name", "")
 
         logger.info(
             f"[{conn['name']}] '{metadata.get('title')}' scored {score}/100 ({recommendation})"
         )
 
+        # Check for existing deal and previous scores (follow-up intelligence)
+        existing_deal = _find_existing_deal(company_name, crm_name, crm_key)
+        previous_scores = _get_previous_scores(company_name)
+
         deal_id = None
-        if score >= REVIEW_THRESHOLD:
+        if existing_deal:
+            deal_id = existing_deal.get("deal_id")
+            logger.info(
+                f"[{conn['name']}] Existing deal found for '{company_name}': {existing_deal.get('deal_name')} "
+                f"(call #{len(previous_scores) + 1})"
+            )
+        elif score >= REVIEW_THRESHOLD:
             crm_client = crm_factory.get_client(crm_name)
             result = crm_client.create_deal(
                 score_result, analysis, metadata, dry_run=False, api_key=crm_key
@@ -676,7 +757,10 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
 
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
-            _send_slack_notification(slack_url, score_result, analysis, metadata, deal_id=deal_id)
+            _send_slack_notification(
+                slack_url, score_result, analysis, metadata,
+                deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
+            )
 
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed: {e}")
@@ -1141,6 +1225,7 @@ DEALS_LOG_FILE = Path(__file__).parent / ".deals_log.json"
 
 def _save_scored_deal(score_result: dict, analysis: dict, metadata: dict, deal_id: Optional[str] = None):
     """Save a scored deal to the log for history tracking."""
+    company_name = analysis.get("prospect_company", {}).get("name", "")
     entry = {
         "deal_id": deal_id,
         "deal_name": score_result.get("deal_name_suggestion", "Unknown"),
@@ -1150,7 +1235,7 @@ def _save_scored_deal(score_result: dict, analysis: dict, metadata: dict, deal_i
         "framework": score_result.get("framework", "custom"),
         "breakdown": score_result.get("breakdown", {}),
         "key_insight": score_result.get("key_insight", ""),
-        "company": analysis.get("prospect_company", {}).get("name", ""),
+        "company": company_name,
         "participants": metadata.get("participants", []),
         "created_at": datetime.now().isoformat(),
     }
@@ -1161,13 +1246,14 @@ def _save_scored_deal(score_result: dict, analysis: dict, metadata: dict, deal_i
             cur = conn.cursor()
             cur.execute(
                 """INSERT INTO scored_deals
-                   (deal_id, deal_name, meeting_title, score, recommendation, framework, breakdown, analysis, metadata, key_insight)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   (deal_id, deal_name, meeting_title, score, recommendation, framework, breakdown, analysis, metadata, key_insight, company_name)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     deal_id, entry["deal_name"], entry["meeting_title"],
                     entry["score"], entry["recommendation"], entry["framework"],
                     json.dumps(entry["breakdown"]), json.dumps({"company": entry["company"]}),
                     json.dumps({"participants": entry["participants"]}), entry["key_insight"],
+                    company_name,
                 ),
             )
             conn.commit()

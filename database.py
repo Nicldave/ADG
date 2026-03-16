@@ -102,8 +102,21 @@ def init_db():
                 analysis JSONB DEFAULT '{}',
                 metadata JSONB DEFAULT '{}',
                 key_insight TEXT DEFAULT '',
+                company_name TEXT DEFAULT '',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+        """)
+        # Migration: add company_name if table already existed without it
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'scored_deals' AND column_name = 'company_name'
+                ) THEN
+                    ALTER TABLE scored_deals ADD COLUMN company_name TEXT DEFAULT '';
+                END IF;
+            END $$;
         """)
         conn.commit()
         cur.close()

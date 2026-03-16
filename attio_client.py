@@ -242,6 +242,40 @@ def create_deal(
         return None
 
 
+def find_deal_by_company(company_name: str, api_key: Optional[str] = None) -> Optional[dict]:
+    """
+    Search for an existing deal in Attio by company name.
+    Returns the first matching deal's record_id, name, and stage, or None.
+    """
+    if not company_name:
+        return None
+
+    try:
+        # Search deals with a filter on the deal name containing the company name
+        payload = {
+            "filter": {"name": {"$contains": company_name}},
+            "limit": 5,
+        }
+        data = _attio_request("POST", "/objects/deals/records/query", payload, api_key=api_key)
+        results = data.get("data", [])
+        if results:
+            deal = results[0]
+            record_id = deal["id"]["record_id"]
+            name_vals = deal.get("values", {}).get("name", [])
+            deal_name = name_vals[0].get("value", "") if name_vals else ""
+            stage_vals = deal.get("values", {}).get("stage", [])
+            stage = stage_vals[0].get("status", {}).get("title", "") if stage_vals else ""
+            logger.info(f"Found existing Attio deal for '{company_name}': {deal_name} (ID: {record_id}, stage: {stage})")
+            return {
+                "deal_id": record_id,
+                "deal_name": deal_name,
+                "stage": stage,
+            }
+    except Exception as e:
+        logger.warning(f"Attio deal search failed for company '{company_name}': {e}")
+    return None
+
+
 def update_deal_stage(deal_id: str, stage: str, api_key: Optional[str] = None) -> Optional[dict]:
     """
     Update a deal's stage in Attio.
