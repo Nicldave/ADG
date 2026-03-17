@@ -1405,4 +1405,11 @@ def list_deals():
 @app.get("/health")
 def health():
     """Health check."""
-    return {"status": "ok", "version": "1.0.0"}
+    from config import FIREFLIES_API_KEY, SLACK_WEBHOOK_URL, DATABASE_URL
+    return {
+        "status": "ok",
+        "version": "1.0.1",
+        "fireflies_configured": bool(FIREFLIES_API_KEY),
+        "slack_configured": bool(SLACK_WEBHOOK_URL),
+        "database_configured": bool(DATABASE_URL),
+    }
