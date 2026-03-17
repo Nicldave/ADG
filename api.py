@@ -603,6 +603,95 @@ async def fireflies_webhook(webhook_id: str, request: Request, background_tasks:
     return {"status": "processing", "transcript_id": transcript_id}
 
 
+# ── Process latest (manual trigger from Slack) ───────────────────────────────
+
+@app.post("/process-latest", dependencies=[Depends(require_api_key)])
+def process_latest_call(background_tasks: BackgroundTasks):
+    """
+    Pull the most recent Fireflies transcript and run the full pipeline.
+    Use this when the webhook doesn't fire. Returns immediately, processes in background.
+    """
+    from config import FIREFLIES_API_KEY, ATTIO_API_KEY, SLACK_WEBHOOK_URL, DEFAULT_FRAMEWORK
+
+    if not FIREFLIES_API_KEY:
+        raise HTTPException(status_code=400, detail="FIREFLIES_API_KEY not configured")
+
+    try:
+        transcripts = fireflies_client.list_transcripts(limit=1, api_key=FIREFLIES_API_KEY)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list transcripts: {e}")
+
+    if not transcripts:
+        raise HTTPException(status_code=404, detail="No transcripts found")
+
+    latest = transcripts[0]
+    transcript_id = latest.get("id")
+    title = latest.get("title", "Unknown")
+
+    conn = {
+        "name": "Default",
+        "fireflies_api_key": FIREFLIES_API_KEY,
+        "crm": "attio",
+        "crm_api_key": ATTIO_API_KEY,
+        "framework": DEFAULT_FRAMEWORK,
+        "auto_create_threshold": AUTO_CREATE_THRESHOLD,
+        "slack_webhook_url": SLACK_WEBHOOK_URL,
+    }
+
+    background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
+
+    return {
+        "status": "processing",
+        "transcript_id": transcript_id,
+        "title": title,
+        "message": f"Processing '{title}'. Results will appear in Slack.",
+    }
+
+
+@app.post("/slack/score-call")
+async def slack_score_call(request: Request, background_tasks: BackgroundTasks):
+    """
+    Slack slash command endpoint. Configure in Slack:
+    /score-call -> POST https://web-production-9afb1.up.railway.app/slack/score-call
+
+    Pulls the most recent Fireflies transcript and runs the pipeline.
+    Responds immediately to Slack (within 3s), processes in background.
+    """
+    from config import FIREFLIES_API_KEY, ATTIO_API_KEY, SLACK_WEBHOOK_URL, DEFAULT_FRAMEWORK
+
+    if not FIREFLIES_API_KEY:
+        return {"response_type": "ephemeral", "text": "Error: FIREFLIES_API_KEY not configured on server."}
+
+    try:
+        transcripts = fireflies_client.list_transcripts(limit=1, api_key=FIREFLIES_API_KEY)
+    except Exception as e:
+        return {"response_type": "ephemeral", "text": f"Error fetching transcripts: {e}"}
+
+    if not transcripts:
+        return {"response_type": "ephemeral", "text": "No transcripts found in Fireflies."}
+
+    latest = transcripts[0]
+    transcript_id = latest.get("id")
+    title = latest.get("title", "Unknown")
+
+    conn = {
+        "name": "Default",
+        "fireflies_api_key": FIREFLIES_API_KEY,
+        "crm": "attio",
+        "crm_api_key": ATTIO_API_KEY,
+        "framework": DEFAULT_FRAMEWORK,
+        "auto_create_threshold": AUTO_CREATE_THRESHOLD,
+        "slack_webhook_url": SLACK_WEBHOOK_URL,
+    }
+
+    background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
+
+    return {
+        "response_type": "in_channel",
+        "text": f":hourglass_flowing_sand: Scoring *{title}*... results will appear in #dealsmart shortly.",
+    }
+
+
 # ── File upload ───────────────────────────────────────────────────────────────
 
 def _parse_vtt(content: str) -> str:
