@@ -85,7 +85,7 @@ class CreateDealRequest(BaseModel):
     analysis: dict = Field(..., description="Output from /analyze")
     score_result: dict = Field(..., description="Output from /analyze")
     crm: str = Field("attio", description="CRM target: hubspot or attio")
-    dry_run: bool = Field(True, description="If true, simulates without creating")
+    dry_run: bool = Field(False, description="If true, simulates without creating")
     crm_api_key: Optional[str] = Field(None, description="User's own CRM API key. If omitted, uses server default.")
 
 
