@@ -13,7 +13,9 @@ const API = {
         const res = await fetch(this.base + path, opts);
 
         if (res.status === 401) {
-            window.location.href = '/static/login.html';
+            if (!window.location.pathname.includes('login')) {
+                window.location.href = '/static/login.html';
+            }
             return null;
         }
 
