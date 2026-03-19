@@ -203,6 +203,28 @@ def list_connections() -> list[dict]:
     return result
 
 
+def list_connections_full() -> list[dict]:
+    """List all connections with full data including API keys. Internal use only (polling worker)."""
+    if _use_pg():
+        import database
+        db = database.get_conn()
+        try:
+            cur = db.cursor()
+            columns = ["webhook_id"] + _CONN_FIELDS
+            cur.execute(f"SELECT {', '.join(columns)} FROM connections WHERE active = TRUE")
+            rows = cur.fetchall()
+            cur.close()
+            return [_row_to_dict(r, columns) for r in rows]
+        except Exception as e:
+            logger.error(f"Failed to list full connections from DB: {e}")
+            return []
+        finally:
+            database.put_conn(db)
+    else:
+        raw = _load()
+        return [{"webhook_id": wid, **conn} for wid, conn in raw.items() if conn.get("active", True)]
+
+
 def update_connection(webhook_id: str, updates: dict) -> Optional[dict]:
     """Update fields on an existing connection."""
     if _use_pg():

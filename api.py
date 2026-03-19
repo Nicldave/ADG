@@ -356,6 +356,99 @@ def delete_connection(webhook_id: str):
     raise HTTPException(status_code=404, detail="Connection not found")
 
 
+# ── Helpers: dedup, error alerting, default connection ────────────────────────
+
+def _is_processed(transcript_id: str, connection_name: str = "Default") -> bool:
+    """Check if a transcript has already been processed."""
+    if database.is_available():
+        conn = database.get_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT 1 FROM processed_transcripts WHERE transcript_id = %s AND connection_name = %s",
+                    (transcript_id, connection_name),
+                )
+                found = cur.fetchone() is not None
+                cur.close()
+                return found
+            except Exception as e:
+                logger.warning(f"Failed to check processed status: {e}")
+            finally:
+                database.put_conn(conn)
+    # File fallback
+    from config import PROCESSED_LOG
+    if PROCESSED_LOG.exists():
+        return transcript_id in set(PROCESSED_LOG.read_text().strip().splitlines())
+    return False
+
+
+def _mark_processed(
+    transcript_id: str, connection_name: str = "Default",
+    score: Optional[int] = None, status: str = "success", error: str = "",
+):
+    """Record that a transcript has been processed."""
+    if database.is_available():
+        conn = database.get_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """INSERT INTO processed_transcripts (transcript_id, connection_name, score, status, error_message)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (transcript_id, connection_name) DO UPDATE
+                       SET score = EXCLUDED.score, status = EXCLUDED.status, error_message = EXCLUDED.error_message,
+                           processed_at = NOW()""",
+                    (transcript_id, connection_name, score, status, error),
+                )
+                conn.commit()
+                cur.close()
+                return
+            except Exception as e:
+                conn.rollback()
+                logger.warning(f"Failed to mark processed in DB: {e}")
+            finally:
+                database.put_conn(conn)
+    # File fallback
+    from config import PROCESSED_LOG
+    with open(PROCESSED_LOG, "a") as f:
+        f.write(f"{transcript_id}\n")
+
+
+def _send_error_alert(error: Exception, context: str, connection_name: str = "Default"):
+    """Post pipeline error to Slack for operator visibility."""
+    from config import ERROR_SLACK_WEBHOOK_URL
+    url = ERROR_SLACK_WEBHOOK_URL
+    if not url:
+        return
+    import requests as req_lib
+    text = (
+        f":red_circle: *Fairplay Pipeline Error*\n"
+        f"Connection: {connection_name}\n"
+        f"Context: {context}\n"
+        f"Error: `{type(error).__name__}: {str(error)[:500]}`\n"
+        f"Time: {datetime.now().isoformat()}"
+    )
+    try:
+        req_lib.post(url, json={"text": text}, timeout=10)
+    except Exception:
+        pass
+
+
+def _build_default_connection() -> dict:
+    """Build a virtual connection dict from server env vars."""
+    from config import FIREFLIES_API_KEY, ATTIO_API_KEY, SLACK_WEBHOOK_URL, DEFAULT_FRAMEWORK
+    return {
+        "name": "Default",
+        "fireflies_api_key": FIREFLIES_API_KEY,
+        "crm": "attio",
+        "crm_api_key": ATTIO_API_KEY,
+        "framework": DEFAULT_FRAMEWORK,
+        "auto_create_threshold": AUTO_CREATE_THRESHOLD,
+        "slack_webhook_url": SLACK_WEBHOOK_URL,
+    }
+
+
 # ── Fireflies webhook (automated pipeline) ──────────────────────────────────
 
 def _process_fireflies_transcript(transcript_id: str, conn: dict):
@@ -429,6 +522,9 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         # 4b. Log scored deal
         _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
 
+        # 4c. Mark transcript as processed
+        _mark_processed(transcript_id, conn.get("name", "Default"), score=score, status="success")
+
         # 5. Slack notification (if configured)
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
@@ -439,6 +535,8 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
 
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed for transcript {transcript_id}: {e}")
+        _mark_processed(transcript_id, conn.get("name", "Default"), status="error", error=str(e)[:500])
+        _send_error_alert(e, f"Fireflies transcript {transcript_id}", conn.get("name", "Default"))
 
 
 def _get_previous_scores(company_name: str) -> list:
@@ -537,8 +635,6 @@ async def fireflies_webhook_default(request: Request, background_tasks: Backgrou
     No connection setup needed. Configure in Fireflies:
     Settings > Integrations > Webhooks > Add webhook URL.
     """
-    from config import FIREFLIES_API_KEY, ATTIO_API_KEY, SLACK_WEBHOOK_URL, DEFAULT_FRAMEWORK
-
     body = await request.json()
     logger.info(f"Fireflies default webhook received: {body}")
 
@@ -555,17 +651,7 @@ async def fireflies_webhook_default(request: Request, background_tasks: Backgrou
         logger.warning(f"Fireflies webhook: no transcript ID in payload: {body}")
         return {"status": "ignored", "reason": "no transcript_id in payload"}
 
-    # Build a virtual connection from env vars
-    conn = {
-        "name": "Default",
-        "fireflies_api_key": FIREFLIES_API_KEY,
-        "crm": "attio",
-        "crm_api_key": ATTIO_API_KEY,
-        "framework": DEFAULT_FRAMEWORK,
-        "auto_create_threshold": AUTO_CREATE_THRESHOLD,
-        "slack_webhook_url": SLACK_WEBHOOK_URL,
-    }
-
+    conn = _build_default_connection()
     logger.info(f"Processing Fireflies transcript {transcript_id} with default keys")
     background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
 
@@ -611,13 +697,12 @@ def process_latest_call(background_tasks: BackgroundTasks):
     Pull the most recent Fireflies transcript and run the full pipeline.
     Use this when the webhook doesn't fire. Returns immediately, processes in background.
     """
-    from config import FIREFLIES_API_KEY, ATTIO_API_KEY, SLACK_WEBHOOK_URL, DEFAULT_FRAMEWORK
-
-    if not FIREFLIES_API_KEY:
+    conn = _build_default_connection()
+    if not conn["fireflies_api_key"]:
         raise HTTPException(status_code=400, detail="FIREFLIES_API_KEY not configured")
 
     try:
-        transcripts = fireflies_client.list_transcripts(limit=1, api_key=FIREFLIES_API_KEY)
+        transcripts = fireflies_client.list_transcripts(limit=1, api_key=conn["fireflies_api_key"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list transcripts: {e}")
 
@@ -627,16 +712,6 @@ def process_latest_call(background_tasks: BackgroundTasks):
     latest = transcripts[0]
     transcript_id = latest.get("id")
     title = latest.get("title", "Unknown")
-
-    conn = {
-        "name": "Default",
-        "fireflies_api_key": FIREFLIES_API_KEY,
-        "crm": "attio",
-        "crm_api_key": ATTIO_API_KEY,
-        "framework": DEFAULT_FRAMEWORK,
-        "auto_create_threshold": AUTO_CREATE_THRESHOLD,
-        "slack_webhook_url": SLACK_WEBHOOK_URL,
-    }
 
     background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
 
@@ -657,13 +732,12 @@ async def slack_score_call(request: Request, background_tasks: BackgroundTasks):
     Pulls the most recent Fireflies transcript and runs the pipeline.
     Responds immediately to Slack (within 3s), processes in background.
     """
-    from config import FIREFLIES_API_KEY, ATTIO_API_KEY, SLACK_WEBHOOK_URL, DEFAULT_FRAMEWORK
-
-    if not FIREFLIES_API_KEY:
+    conn = _build_default_connection()
+    if not conn["fireflies_api_key"]:
         return {"response_type": "ephemeral", "text": "Error: FIREFLIES_API_KEY not configured on server."}
 
     try:
-        transcripts = fireflies_client.list_transcripts(limit=1, api_key=FIREFLIES_API_KEY)
+        transcripts = fireflies_client.list_transcripts(limit=1, api_key=conn["fireflies_api_key"])
     except Exception as e:
         return {"response_type": "ephemeral", "text": f"Error fetching transcripts: {e}"}
 
@@ -673,16 +747,6 @@ async def slack_score_call(request: Request, background_tasks: BackgroundTasks):
     latest = transcripts[0]
     transcript_id = latest.get("id")
     title = latest.get("title", "Unknown")
-
-    conn = {
-        "name": "Default",
-        "fireflies_api_key": FIREFLIES_API_KEY,
-        "crm": "attio",
-        "crm_api_key": ATTIO_API_KEY,
-        "framework": DEFAULT_FRAMEWORK,
-        "auto_create_threshold": AUTO_CREATE_THRESHOLD,
-        "slack_webhook_url": SLACK_WEBHOOK_URL,
-    }
 
     background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
 
@@ -853,6 +917,7 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
 
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed: {e}")
+        _send_error_alert(e, "Transcript text processing", conn.get("name", "Default"))
 
 
 # ── Zoom webhook ──────────────────────────────────────────────────────────────
@@ -1400,16 +1465,158 @@ def list_deals():
     return _load_deals_log()
 
 
+# ── Transcript polling worker ─────────────────────────────────────────────────
+
+def _poll_all_connections():
+    """Poll Fireflies for new transcripts across all connections. Runs on a schedule."""
+    from config import POLLING_INTERVAL_MINUTES
+    import time as _time
+
+    logger.info("Polling for new transcripts...")
+
+    # Gather connections to poll
+    conns_to_poll = []
+
+    # Check registered connections
+    try:
+        all_conns = connections.list_connections_full() if hasattr(connections, 'list_connections_full') else []
+        for c in all_conns:
+            if c.get("active", True) and c.get("fireflies_api_key"):
+                conns_to_poll.append(c)
+    except Exception as e:
+        logger.warning(f"Failed to list connections for polling: {e}")
+
+    # If no registered connections, use default env var connection
+    if not conns_to_poll:
+        default = _build_default_connection()
+        if default["fireflies_api_key"]:
+            conns_to_poll.append(default)
+
+    if not conns_to_poll:
+        logger.info("No connections with Fireflies keys found, skipping poll")
+        return
+
+    lookback = datetime.now() - __import__("datetime").timedelta(minutes=POLLING_INTERVAL_MINUTES * 2)
+    total_processed = 0
+
+    for conn in conns_to_poll:
+        conn_name = conn.get("name", "Default")
+        try:
+            transcripts = fireflies_client.list_transcripts(
+                since=lookback, limit=10, api_key=conn["fireflies_api_key"]
+            )
+            for t in transcripts:
+                tid = t.get("id")
+                if not tid or _is_processed(tid, conn_name):
+                    continue
+                logger.info(f"[Poller] Processing new transcript: {t.get('title', tid)} for {conn_name}")
+                _process_fireflies_transcript(tid, conn)
+                total_processed += 1
+                _time.sleep(2)  # Small delay between transcripts to respect rate limits
+        except Exception as e:
+            logger.error(f"[Poller] Failed polling for {conn_name}: {e}")
+            _send_error_alert(e, f"Polling for connection {conn_name}", conn_name)
+
+    logger.info(f"Polling complete. Processed {total_processed} new transcript(s).")
+
+
+# Start polling scheduler on app startup
+from config import POLLING_ENABLED, POLLING_INTERVAL_MINUTES as _POLL_MINS
+
+if POLLING_ENABLED:
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        _scheduler = BackgroundScheduler()
+        _scheduler.add_job(
+            _poll_all_connections,
+            "interval",
+            minutes=_POLL_MINS,
+            id="transcript_poller",
+            max_instances=1,
+        )
+
+        @app.on_event("startup")
+        def _start_poller():
+            _scheduler.start()
+            logger.info(f"Transcript poller started (every {_POLL_MINS} min)")
+
+        @app.on_event("shutdown")
+        def _stop_poller():
+            if _scheduler.running:
+                _scheduler.shutdown(wait=False)
+    except ImportError:
+        logger.warning("apscheduler not installed, polling disabled")
+
+
+@app.post("/poll-now", dependencies=[Depends(require_api_key)])
+def poll_now():
+    """Manually trigger a polling cycle. For debugging."""
+    _poll_all_connections()
+    return {"status": "poll complete"}
+
+
+# ── Batch scoring ────────────────────────────────────────────────────────────
+
+class BatchScoreRequest(BaseModel):
+    transcript_ids: Optional[list[str]] = None
+    count: int = Field(10, ge=1, le=50, description="Number of recent transcripts to score (if no IDs provided)")
+
+
+@app.post("/batch-score", dependencies=[Depends(require_api_key)])
+def batch_score(req: BatchScoreRequest, background_tasks: BackgroundTasks):
+    """
+    Score multiple transcripts in batch. For warm start / retroactive scoring.
+    Processes in background, results appear in deal log and Slack.
+    """
+    conn = _build_default_connection()
+    if not conn["fireflies_api_key"]:
+        raise HTTPException(status_code=400, detail="FIREFLIES_API_KEY not configured")
+
+    if req.transcript_ids:
+        ids_to_process = req.transcript_ids
+    else:
+        try:
+            transcripts = fireflies_client.list_transcripts(limit=req.count, api_key=conn["fireflies_api_key"])
+            ids_to_process = [t["id"] for t in transcripts]
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to list transcripts: {e}")
+
+    # Filter out already processed
+    conn_name = conn.get("name", "Default")
+    new_ids = [tid for tid in ids_to_process if not _is_processed(tid, conn_name)]
+    skipped = len(ids_to_process) - len(new_ids)
+
+    def _batch_worker(transcript_ids, connection):
+        import time as _time
+        for tid in transcript_ids:
+            try:
+                _process_fireflies_transcript(tid, connection)
+            except Exception as e:
+                logger.error(f"[Batch] Failed processing {tid}: {e}")
+            _time.sleep(3)  # Rate limit protection
+
+    if new_ids:
+        background_tasks.add_task(_batch_worker, new_ids, conn)
+
+    return {
+        "status": "processing",
+        "queued": len(new_ids),
+        "skipped_duplicates": skipped,
+        "transcript_ids": new_ids,
+    }
+
+
 # ── Health check ─────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     """Health check."""
-    from config import FIREFLIES_API_KEY, SLACK_WEBHOOK_URL, DATABASE_URL
+    from config import FIREFLIES_API_KEY, SLACK_WEBHOOK_URL, DATABASE_URL, POLLING_ENABLED
     return {
         "status": "ok",
-        "version": "1.0.1",
+        "version": "2.0.0",
         "fireflies_configured": bool(FIREFLIES_API_KEY),
         "slack_configured": bool(SLACK_WEBHOOK_URL),
         "database_configured": bool(DATABASE_URL),
+        "polling_enabled": POLLING_ENABLED,
     }

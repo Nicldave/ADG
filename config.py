@@ -46,6 +46,15 @@ ATTIO_DEAL_STAGE_REVIEW = os.getenv("ATTIO_DEAL_STAGE_REVIEW", "Needs Review")
 ATTIO_DEAL_COMPANY_ATTR = os.getenv("ATTIO_DEAL_COMPANY_ATTR", "associated_workspace_member")
 ATTIO_DEAL_PEOPLE_ATTR = os.getenv("ATTIO_DEAL_PEOPLE_ATTR", "associated_people")
 
+# Attio Fairplay custom fields (configure slugs per workspace)
+ATTIO_FIELD_FAIRPLAY_SCORE = os.getenv("ATTIO_FIELD_FAIRPLAY_SCORE", "fairplay_score")
+ATTIO_FIELD_FRAMEWORK = os.getenv("ATTIO_FIELD_FRAMEWORK", "fairplay_framework")
+ATTIO_FIELD_SCORED_AT = os.getenv("ATTIO_FIELD_SCORED_AT", "fairplay_scored_at")
+ATTIO_FIELD_AUTO_CREATED = os.getenv("ATTIO_FIELD_AUTO_CREATED", "fairplay_auto_created")
+ATTIO_FIELD_CREATION_METHOD = os.getenv("ATTIO_FIELD_CREATION_METHOD", "fairplay_creation_method")
+ATTIO_FIELD_BREAKDOWN = os.getenv("ATTIO_FIELD_BREAKDOWN", "fairplay_breakdown")
+ATTIO_FIELD_KEY_INSIGHT = os.getenv("ATTIO_FIELD_KEY_INSIGHT", "fairplay_key_insight")
+
 # Claude model for transcript analysis
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
@@ -56,6 +65,13 @@ REVIEW_THRESHOLD = 50       # Score 50-69: create as "needs review"
 
 # Default framework for automated/batch processing (custom, bant, spiced, meddic, spin)
 DEFAULT_FRAMEWORK = os.getenv("DEFAULT_FRAMEWORK", "custom")
+
+# Error alerting (falls back to main Slack webhook if not set)
+ERROR_SLACK_WEBHOOK_URL = os.getenv("ERROR_SLACK_WEBHOOK_URL", "") or SLACK_WEBHOOK_URL
+
+# Polling configuration
+POLLING_ENABLED = os.getenv("POLLING_ENABLED", "true").lower() == "true"
+POLLING_INTERVAL_MINUTES = int(os.getenv("POLLING_INTERVAL_MINUTES", "15"))
 
 # Scoring weights and frameworks are defined in frameworks.py
 

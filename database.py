@@ -118,6 +118,17 @@ def init_db():
                 END IF;
             END $$;
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS processed_transcripts (
+                transcript_id TEXT NOT NULL,
+                connection_name TEXT NOT NULL DEFAULT 'Default',
+                processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                score INTEGER,
+                status TEXT DEFAULT 'success',
+                error_message TEXT DEFAULT '',
+                PRIMARY KEY (transcript_id, connection_name)
+            );
+        """)
         conn.commit()
         cur.close()
         logger.info("PostgreSQL tables initialized")

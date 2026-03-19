@@ -215,6 +215,28 @@ def create_deal(
             for _, cid in contact_ids
         ]
 
+    # Fairplay custom fields (structured data on the deal object)
+    from config import (
+        ATTIO_FIELD_FAIRPLAY_SCORE, ATTIO_FIELD_FRAMEWORK,
+        ATTIO_FIELD_SCORED_AT, ATTIO_FIELD_AUTO_CREATED,
+        ATTIO_FIELD_CREATION_METHOD, ATTIO_FIELD_BREAKDOWN,
+        ATTIO_FIELD_KEY_INSIGHT,
+    )
+    breakdown_text = " | ".join(
+        f"{d.get('label', k)}: {d['score']}/{d['max']}"
+        for k, d in score_result.get("breakdown", {}).items()
+    )
+    fairplay_fields = {
+        ATTIO_FIELD_FAIRPLAY_SCORE: [{"value": score_result["total_score"]}],
+        ATTIO_FIELD_FRAMEWORK: [{"value": score_result.get("framework", "custom").upper()}],
+        ATTIO_FIELD_SCORED_AT: [{"value": datetime.now().isoformat()}],
+        ATTIO_FIELD_AUTO_CREATED: [{"value": True}],
+        ATTIO_FIELD_CREATION_METHOD: [{"value": f"Fairplay {recommendation}"}],
+        ATTIO_FIELD_KEY_INSIGHT: [{"value": score_result.get("key_insight", "")}],
+        ATTIO_FIELD_BREAKDOWN: [{"value": breakdown_text}],
+    }
+    values.update(fairplay_fields)
+
     try:
         data = _attio_request(
             "POST",
@@ -237,6 +259,35 @@ def create_deal(
             "stage": stage,
             "score": score_result["total_score"],
         }
+    except requests.exceptions.HTTPError as e:
+        # If Fairplay custom fields don't exist in workspace, retry without them
+        if hasattr(e, 'response') and e.response is not None and e.response.status_code in (400, 422):
+            for field_slug in fairplay_fields:
+                values.pop(field_slug, None)
+            logger.warning("Fairplay custom fields not found in Attio workspace, retrying without them")
+            try:
+                data = _attio_request(
+                    "POST",
+                    "/objects/deals/records",
+                    {"data": {"values": values}},
+                    api_key=api_key,
+                )
+                deal_id = data["data"]["id"]["record_id"]
+                logger.info(f"Created Attio deal (without Fairplay fields): {deal_name} (ID: {deal_id})")
+                return {
+                    "deal_id": deal_id,
+                    "deal_name": deal_name,
+                    "deal_url": f"https://app.attio.com/deals/{deal_id}",
+                    "company_id": company_id,
+                    "associated_contacts": [cid for _, cid in contact_ids],
+                    "stage": stage,
+                    "score": score_result["total_score"],
+                }
+            except Exception as e2:
+                logger.error(f"Failed to create Attio deal '{deal_name}' (retry): {e2}")
+                return None
+        logger.error(f"Failed to create Attio deal '{deal_name}': {e}")
+        return None
     except Exception as e:
         logger.error(f"Failed to create Attio deal '{deal_name}': {e}")
         return None
