@@ -386,23 +386,28 @@ def delete_connection(webhook_id: str):
 # ── Helpers: dedup, error alerting, default connection ────────────────────────
 
 def _is_processed(transcript_id: str, connection_name: str = "Default") -> bool:
-    """Check if a transcript has already been processed."""
+    """Check if a transcript has been successfully processed. Allows retries through."""
     if database.is_available():
         conn = database.get_conn()
         if conn:
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT 1 FROM processed_transcripts WHERE transcript_id = %s AND connection_name = %s",
+                    "SELECT status FROM processed_transcripts WHERE transcript_id = %s AND connection_name = %s",
                     (transcript_id, connection_name),
                 )
-                found = cur.fetchone() is not None
+                row = cur.fetchone()
                 cur.close()
-                return found
+                if not row:
+                    return False
+                # Only block if successfully processed or permanently errored
+                return row[0] in ("success", "error")
             except Exception as e:
                 logger.warning(f"Failed to check processed status: {e}")
+                return False
             finally:
                 database.put_conn(conn)
+        return False
     # File fallback
     from config import PROCESSED_LOG
     if PROCESSED_LOG.exists():
@@ -440,6 +445,54 @@ def _mark_processed(
     from config import PROCESSED_LOG
     with open(PROCESSED_LOG, "a") as f:
         f.write(f"{transcript_id}\n")
+
+
+def _get_retry_count(transcript_id: str, connection_name: str = "Default") -> int:
+    """Get how many times we've tried to process this transcript."""
+    if database.is_available():
+        conn = database.get_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """SELECT COALESCE(
+                        (SELECT (error_message)::int FROM processed_transcripts
+                         WHERE transcript_id = %s AND connection_name = %s AND status = 'retrying'),
+                    0)""",
+                    (transcript_id, connection_name),
+                )
+                count = cur.fetchone()[0]
+                cur.close()
+                return count
+            except Exception:
+                return 0
+            finally:
+                database.put_conn(conn)
+    return 0
+
+
+def _increment_retry(transcript_id: str, connection_name: str = "Default"):
+    """Track a retry attempt for a transcript."""
+    current = _get_retry_count(transcript_id, connection_name)
+    if database.is_available():
+        conn = database.get_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """INSERT INTO processed_transcripts (transcript_id, connection_name, status, error_message)
+                       VALUES (%s, %s, 'retrying', %s)
+                       ON CONFLICT (transcript_id, connection_name) DO UPDATE
+                       SET status = 'retrying', error_message = %s::text, processed_at = NOW()""",
+                    (transcript_id, connection_name, str(current + 1), str(current + 1)),
+                )
+                conn.commit()
+                cur.close()
+            except Exception as e:
+                conn.rollback()
+                logger.warning(f"Failed to increment retry: {e}")
+            finally:
+                database.put_conn(conn)
 
 
 def _send_error_alert(error: Exception, context: str, connection_name: str = "Default"):
@@ -492,12 +545,16 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
 
         # 1. Pull transcript from Fireflies
         transcript = fireflies_client.get_transcript(transcript_id, api_key=ff_key)
+        if not transcript:
+            logger.info(f"Transcript {transcript_id} not ready yet (None response), will retry next cycle")
+            return  # Don't mark as processed, let next poll retry
+
         text = fireflies_client.format_transcript_text(transcript)
-        metadata = fireflies_client.get_meeting_metadata(transcript)
+        metadata = fireflies_client.get_meeting_metadata(transcript) if transcript else {}
 
         if not text or len(text) < 50:
-            logger.warning(f"Transcript {transcript_id} too short ({len(text)} chars), skipping")
-            return
+            logger.info(f"Transcript {transcript_id} too short ({len(text) if text else 0} chars), will retry next cycle")
+            return  # Don't mark as processed, let next poll retry
 
         # 2. Analyze with Claude
         analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
@@ -562,8 +619,15 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
 
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed for transcript {transcript_id}: {e}")
-        _mark_processed(transcript_id, conn.get("name", "Default"), status="error", error=str(e)[:500])
-        _send_error_alert(e, f"Fireflies transcript {transcript_id}", conn.get("name", "Default"))
+        # Track retry count. Only mark as permanent error after 3 attempts.
+        conn_name = conn.get("name", "Default")
+        retry_count = _get_retry_count(transcript_id, conn_name)
+        if retry_count >= 2:
+            _mark_processed(transcript_id, conn_name, status="error", error=str(e)[:500])
+            _send_error_alert(e, f"Fireflies transcript {transcript_id} (failed after 3 attempts)", conn_name)
+        else:
+            _increment_retry(transcript_id, conn_name)
+            logger.info(f"Transcript {transcript_id} attempt {retry_count + 1}/3 failed, will retry next cycle")
 
 
 def _get_previous_scores(company_name: str) -> list:
