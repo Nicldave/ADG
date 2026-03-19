@@ -298,12 +298,20 @@ SOURCE_WEBHOOK_PATHS = {
 }
 
 
-@app.post("/connections", response_model=ConnectionResponse, dependencies=[Depends(require_api_key)])
-def create_connection(req: ConnectionRequest):
+@app.post("/connections", response_model=ConnectionResponse)
+def create_connection(req: ConnectionRequest, request: Request):
     """
     Register a new connection. Returns a webhook_url to configure in your transcript source.
     Supports: Fireflies, Zoom, Gong, Microsoft Teams, Google Meet.
+    Accepts either API key auth or session cookie auth.
     """
+    # Allow either API key or session auth
+    user = _get_user_from_session(request)
+    api_key = request.headers.get("x-api-key", "")
+    dealsmart_key = os.getenv("DEALSMART_API_KEY", "")
+    if not user and not (dealsmart_key and api_key == dealsmart_key) and dealsmart_key:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     if req.crm not in ("hubspot", "attio"):
         raise HTTPException(status_code=400, detail=f"Unsupported CRM: '{req.crm}'")
     if req.framework not in FRAMEWORK_NAMES:
@@ -329,6 +337,23 @@ def create_connection(req: ConnectionRequest):
         teams_access_token=req.teams_access_token or "",
         google_access_token=req.google_access_token or "",
     )
+
+    # Link connection to user if logged in via session
+    if user and database.is_available():
+        db = database.get_conn()
+        if db:
+            try:
+                cur = db.cursor()
+                cur.execute(
+                    "UPDATE connections SET user_id = %s WHERE webhook_id = %s",
+                    (user["id"], conn["webhook_id"]),
+                )
+                db.commit()
+                cur.close()
+            except Exception:
+                db.rollback()
+            finally:
+                database.put_conn(db)
 
     base_url = _get_base_url()
     source_path = SOURCE_WEBHOOK_PATHS.get(req.transcript_source, req.transcript_source)
