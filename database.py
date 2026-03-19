@@ -129,6 +129,35 @@ def init_db():
                 PRIMARY KEY (transcript_id, connection_name)
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT DEFAULT '',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+        # Migration: add user_id to connections
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'user_id'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN user_id TEXT DEFAULT '';
+                END IF;
+            END $$;
+        """)
         conn.commit()
         cur.close()
         logger.info("PostgreSQL tables initialized")

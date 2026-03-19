@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Fairplay</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <div class="app-layout">
+        <nav id="app-nav"></nav>
+        <main class="app-content">
+            <div class="page-header">
+                <h1>Dashboard</h1>
+                <p>Your pipeline scoring overview</p>
+            </div>
+
+            <div class="stats-grid" id="stats-grid">
+                <div class="stat-card"><div class="stat-label">Calls Scored</div><div class="stat-value" id="stat-total">-</div></div>
+                <div class="stat-card"><div class="stat-label">Deals Created</div><div class="stat-value" id="stat-created">-</div></div>
+                <div class="stat-card"><div class="stat-label">Avg Score</div><div class="stat-value" id="stat-avg">-</div></div>
+                <div class="stat-card"><div class="stat-label">Needs Review</div><div class="stat-value" id="stat-review">-</div></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>Recent Activity</h2>
+                    <button class="btn btn-sm btn-secondary" onclick="scoreLatest()">Score Latest Call</button>
+                </div>
+                <div id="recent-deals" class="loading">Loading...</div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/app.js"></script>
+    <script>
+        async function loadDashboard() {
+            // Load stats
+            try {
+                const stats = await API.getStats();
+                document.getElementById('stat-total').textContent = stats.total_scored;
+                document.getElementById('stat-created').textContent = stats.auto_created;
+                document.getElementById('stat-avg').textContent = stats.avg_score;
+                document.getElementById('stat-review').textContent = stats.needs_review;
+            } catch (e) {
+                console.error('Stats failed:', e);
+            }
+
+            // Load recent deals
+            try {
+                const deals = await API.getDeals();
+                const container = document.getElementById('recent-deals');
+
+                if (!deals || deals.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <h3>No scored calls yet</h3>
+                            <p>Fairplay will automatically score new calls every 15 minutes, or click "Score Latest Call" to process one now.</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const recent = deals.slice(0, 10);
+                container.innerHTML = `
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Meeting</th>
+                                    <th>Company</th>
+                                    <th>Score</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${recent.map(d => `
+                                    <tr onclick="window.location.href='/static/deals.html'">
+                                        <td>${formatDate(d.created_at)}</td>
+                                        <td>${d.meeting_title || d.deal_name}</td>
+                                        <td>${d.deal_name}</td>
+                                        <td><span class="score-pill" style="background: ${scoreColor(d.score)}">${d.score}</span></td>
+                                        <td>${recBadge(d.recommendation)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (e) {
+                document.getElementById('recent-deals').innerHTML = '<div class="empty-state"><p>Failed to load deals</p></div>';
+            }
+        }
+
+        async function scoreLatest() {
+            const btn = event.target;
+            btn.textContent = 'Scoring...';
+            btn.disabled = true;
+            try {
+                const result = await API.processLatest();
+                btn.textContent = `Scoring "${result.title}"...`;
+                setTimeout(() => {
+                    btn.textContent = 'Score Latest Call';
+                    btn.disabled = false;
+                    loadDashboard();
+                }, 15000);
+            } catch (e) {
+                alert(e.message);
+                btn.textContent = 'Score Latest Call';
+                btn.disabled = false;
+            }
+        }
+
+        initApp().then(loadDashboard);
+    </script>
+</body>
+</html>

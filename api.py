@@ -14,9 +14,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File, Form, Depends, Security
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File, Form, Depends, Security, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 # Add this directory to path so local modules resolve
@@ -1606,6 +1608,286 @@ def batch_score(req: BatchScoreRequest, background_tasks: BackgroundTasks):
     }
 
 
+# ── Auth: Magic Link ──────────────────────────────────────────────────────────
+
+import secrets
+import uuid
+
+
+class MagicLinkRequest(BaseModel):
+    email: str
+
+
+def _get_user_from_session(request: Request) -> Optional[dict]:
+    """Extract user from session cookie. Returns None if not authenticated."""
+    token = request.cookies.get("fp_session")
+    if not token or not database.is_available():
+        return None
+    conn = database.get_conn()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT u.id, u.email, u.name FROM sessions s
+               JOIN users u ON s.user_id = u.id
+               WHERE s.token = %s AND s.type = 'session' AND s.expires_at > NOW()""",
+            (token,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if row:
+            return {"id": row[0], "email": row[1], "name": row[2]}
+        return None
+    except Exception:
+        return None
+    finally:
+        database.put_conn(conn)
+
+
+def require_user(request: Request) -> dict:
+    """Dependency that requires an authenticated user session."""
+    user = _get_user_from_session(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+@app.post("/auth/magic-link")
+def send_magic_link(req: MagicLinkRequest):
+    """Send a magic login link to the user's email."""
+    from config import APP_URL, RESEND_API_KEY, MAGIC_LINK_EXPIRY_MINUTES
+    import requests as req_lib
+
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    if not database.is_available():
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    conn = database.get_conn()
+    try:
+        cur = conn.cursor()
+        # Create user if not exists
+        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+        row = cur.fetchone()
+        if row:
+            user_id = row[0]
+        else:
+            user_id = str(uuid.uuid4())
+            cur.execute(
+                "INSERT INTO users (id, email) VALUES (%s, %s)",
+                (user_id, email),
+            )
+
+        # Create magic link token
+        token = secrets.token_urlsafe(32)
+        cur.execute(
+            """INSERT INTO sessions (token, user_id, type, expires_at)
+               VALUES (%s, %s, 'magic_link', NOW() + INTERVAL '%s minutes')""",
+            (token, user_id, MAGIC_LINK_EXPIRY_MINUTES),
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create login link: {e}")
+    finally:
+        database.put_conn(conn)
+
+    link = f"{APP_URL}/auth/verify?token={token}"
+
+    # Send email via Resend if configured
+    if RESEND_API_KEY:
+        try:
+            req_lib.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                json={
+                    "from": "Fairplay <noreply@nicl.ai>",
+                    "to": [email],
+                    "subject": "Your Fairplay login link",
+                    "html": f"""
+                        <div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 20px;">
+                            <h2 style="font-weight: 700; margin-bottom: 16px;">Sign in to Fairplay</h2>
+                            <p style="color: #666; margin-bottom: 24px;">Click the button below to sign in. This link expires in {MAGIC_LINK_EXPIRY_MINUTES} minutes.</p>
+                            <a href="{link}" style="display: inline-block; background: #0a0a0a; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: 600;">Sign In</a>
+                            <p style="color: #999; font-size: 13px; margin-top: 32px;">If you didn't request this, you can safely ignore this email.</p>
+                        </div>
+                    """,
+                },
+                timeout=10,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send magic link email: {e}")
+
+    # Always return success (don't reveal if email exists) + include link for dev mode
+    result = {"status": "sent", "message": "Check your email for the login link"}
+    if not RESEND_API_KEY:
+        result["dev_link"] = link  # Show link in dev mode when email isn't configured
+    return result
+
+
+@app.get("/auth/verify")
+def verify_magic_link(token: str, response: Response):
+    """Verify magic link token, create session, redirect to app."""
+    from config import SESSION_EXPIRY_HOURS
+
+    if not database.is_available():
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    conn = database.get_conn()
+    try:
+        cur = conn.cursor()
+        # Find and validate magic link
+        cur.execute(
+            """SELECT user_id FROM sessions
+               WHERE token = %s AND type = 'magic_link' AND expires_at > NOW()""",
+            (token,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=400, detail="Invalid or expired login link")
+
+        user_id = row[0]
+
+        # Delete used magic link
+        cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+
+        # Create session token
+        session_token = secrets.token_urlsafe(32)
+        cur.execute(
+            """INSERT INTO sessions (token, user_id, type, expires_at)
+               VALUES (%s, %s, 'session', NOW() + INTERVAL '%s hours')""",
+            (session_token, user_id, SESSION_EXPIRY_HOURS),
+        )
+        conn.commit()
+        cur.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Verification failed: {e}")
+    finally:
+        database.put_conn(conn)
+
+    # Redirect to app with session cookie
+    redirect = RedirectResponse(url="/static/dashboard.html", status_code=302)
+    redirect.set_cookie(
+        key="fp_session",
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=SESSION_EXPIRY_HOURS * 3600,
+    )
+    return redirect
+
+
+@app.get("/auth/me")
+def get_current_user(user: dict = Depends(require_user)):
+    """Return current authenticated user info."""
+    # Check if user has any connections
+    if database.is_available():
+        conn = database.get_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT COUNT(*) FROM connections WHERE user_id = %s",
+                    (user["id"],),
+                )
+                count = cur.fetchone()[0]
+                cur.close()
+                user["has_connections"] = count > 0
+                user["connection_count"] = count
+            except Exception:
+                user["has_connections"] = False
+                user["connection_count"] = 0
+            finally:
+                database.put_conn(conn)
+    return user
+
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response):
+    """Clear session."""
+    token = request.cookies.get("fp_session")
+    if token and database.is_available():
+        conn = database.get_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+                conn.commit()
+                cur.close()
+            except Exception:
+                conn.rollback()
+            finally:
+                database.put_conn(conn)
+    resp = {"status": "logged out"}
+    response.delete_cookie("fp_session")
+    return resp
+
+
+# ── Dashboard stats ──────────────────────────────────────────────────────────
+
+@app.get("/dashboard/stats")
+def dashboard_stats(user: dict = Depends(require_user)):
+    """Aggregate stats for the current user's connections."""
+    if not database.is_available():
+        return {"total_scored": 0, "auto_created": 0, "needs_review": 0, "avg_score": 0}
+
+    conn = database.get_conn()
+    if not conn:
+        return {"total_scored": 0, "auto_created": 0, "needs_review": 0, "avg_score": 0}
+
+    try:
+        cur = conn.cursor()
+        # Get user's connection names
+        cur.execute(
+            "SELECT name FROM connections WHERE user_id = %s",
+            (user["id"],),
+        )
+        conn_names = [r[0] for r in cur.fetchall()]
+
+        if not conn_names:
+            # Fall back to all deals if no connections (admin/default)
+            cur.execute("""
+                SELECT COUNT(*), COALESCE(AVG(score), 0),
+                       COUNT(*) FILTER (WHERE recommendation = 'auto_create'),
+                       COUNT(*) FILTER (WHERE recommendation = 'needs_review')
+                FROM scored_deals
+            """)
+        else:
+            placeholders = ",".join(["%s"] * len(conn_names))
+            cur.execute(f"""
+                SELECT COUNT(*), COALESCE(AVG(score), 0),
+                       COUNT(*) FILTER (WHERE recommendation = 'auto_create'),
+                       COUNT(*) FILTER (WHERE recommendation = 'needs_review')
+                FROM scored_deals sd
+                WHERE EXISTS (
+                    SELECT 1 FROM processed_transcripts pt
+                    WHERE pt.connection_name IN ({placeholders})
+                )
+            """, conn_names)
+
+        row = cur.fetchone()
+        cur.close()
+        return {
+            "total_scored": row[0] or 0,
+            "avg_score": round(row[1] or 0),
+            "auto_created": row[2] or 0,
+            "needs_review": row[3] or 0,
+        }
+    except Exception as e:
+        logger.warning(f"Dashboard stats failed: {e}")
+        return {"total_scored": 0, "auto_created": 0, "needs_review": 0, "avg_score": 0}
+    finally:
+        database.put_conn(conn)
+
+
 # ── Health check ─────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -1614,9 +1896,16 @@ def health():
     from config import FIREFLIES_API_KEY, SLACK_WEBHOOK_URL, DATABASE_URL, POLLING_ENABLED
     return {
         "status": "ok",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "fireflies_configured": bool(FIREFLIES_API_KEY),
         "slack_configured": bool(SLACK_WEBHOOK_URL),
         "database_configured": bool(DATABASE_URL),
         "polling_enabled": POLLING_ENABLED,
     }
+
+
+# ── Static files (must be last, catches all /static/* routes) ────────────────
+import os as _os
+_static_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "static")
+if _os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir, html=True), name="static")

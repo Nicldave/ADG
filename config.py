@@ -73,6 +73,12 @@ ERROR_SLACK_WEBHOOK_URL = os.getenv("ERROR_SLACK_WEBHOOK_URL", "") or SLACK_WEBH
 POLLING_ENABLED = os.getenv("POLLING_ENABLED", "true").lower() == "true"
 POLLING_INTERVAL_MINUTES = int(os.getenv("POLLING_INTERVAL_MINUTES", "15"))
 
+# Auth
+APP_URL = os.getenv("APP_URL", "https://web-production-9afb1.up.railway.app")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "168"))  # 7 days
+MAGIC_LINK_EXPIRY_MINUTES = 15
+
 # Scoring weights and frameworks are defined in frameworks.py
 
 # State file for tracking last processed transcript

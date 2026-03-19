@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deal Log - Fairplay</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <div class="app-layout">
+        <nav id="app-nav"></nav>
+        <main class="app-content">
+            <div class="page-header">
+                <h1>Deal Log</h1>
+                <p>Every conversation scored by Fairplay</p>
+            </div>
+
+            <div class="card" style="margin-bottom: 16px;">
+                <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+                    <select id="filter-framework" onchange="applyFilters()" style="width: auto;">
+                        <option value="">All Frameworks</option>
+                        <option value="bant">BANT</option>
+                        <option value="meddic">MEDDIC</option>
+                        <option value="spiced">SPICED</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                    <select id="filter-rec" onchange="applyFilters()" style="width: auto;">
+                        <option value="">All Statuses</option>
+                        <option value="auto_create">Deal Created</option>
+                        <option value="needs_review">Needs Review</option>
+                        <option value="not_a_deal">Not a Deal</option>
+                    </select>
+                    <input type="number" id="filter-min-score" placeholder="Min score" onchange="applyFilters()" style="width: 120px;">
+                    <span id="deal-count" style="margin-left: auto; color: #888; font-size: 13px;"></span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div id="deals-table" class="loading">Loading...</div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/app.js"></script>
+    <script>
+        let allDeals = [];
+
+        async function loadDeals() {
+            try {
+                allDeals = await API.getDeals();
+                applyFilters();
+            } catch (e) {
+                document.getElementById('deals-table').innerHTML = '<div class="empty-state"><p>Failed to load deals</p></div>';
+            }
+        }
+
+        function applyFilters() {
+            const fw = document.getElementById('filter-framework').value;
+            const rec = document.getElementById('filter-rec').value;
+            const minScore = parseInt(document.getElementById('filter-min-score').value) || 0;
+
+            let filtered = allDeals;
+            if (fw) filtered = filtered.filter(d => d.framework === fw);
+            if (rec) filtered = filtered.filter(d => d.recommendation === rec);
+            if (minScore) filtered = filtered.filter(d => d.score >= minScore);
+
+            document.getElementById('deal-count').textContent = `${filtered.length} deal${filtered.length !== 1 ? 's' : ''}`;
+            renderTable(filtered);
+        }
+
+        function renderTable(deals) {
+            const container = document.getElementById('deals-table');
+
+            if (!deals || deals.length === 0) {
+                container.innerHTML = '<div class="empty-state"><h3>No deals match your filters</h3></div>';
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Meeting</th>
+                                <th>Deal</th>
+                                <th>Score</th>
+                                <th>Framework</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${deals.map((d, i) => `
+                                <tr onclick="toggleDetail(${i})">
+                                    <td>${formatDate(d.created_at)}</td>
+                                    <td>${d.meeting_title || '-'}</td>
+                                    <td>${d.deal_name}</td>
+                                    <td><span class="score-pill" style="background: ${scoreColor(d.score)}">${d.score}</span></td>
+                                    <td>${(d.framework || 'custom').toUpperCase()}</td>
+                                    <td>${recBadge(d.recommendation)}</td>
+                                </tr>
+                                <tr class="deal-detail" id="detail-${i}">
+                                    <td colspan="6">
+                                        <div class="detail-grid">
+                                            <div class="detail-item">
+                                                <label>Key Insight</label>
+                                                <div class="detail-value">${d.key_insight || 'N/A'}</div>
+                                            </div>
+                                            <div class="detail-item">
+                                                <label>Breakdown</label>
+                                                <div class="detail-value">${formatBreakdown(d.breakdown)}</div>
+                                            </div>
+                                            <div class="detail-item">
+                                                <label>Deal ID</label>
+                                                <div class="detail-value" style="font-family: monospace; font-size: 12px;">${d.deal_id || 'N/A'}</div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        function toggleDetail(i) {
+            const el = document.getElementById(`detail-${i}`);
+            el.classList.toggle('open');
+        }
+
+        function formatBreakdown(breakdown) {
+            if (!breakdown || typeof breakdown !== 'object') return 'N/A';
+            return Object.entries(breakdown).map(([k, v]) => {
+                if (typeof v === 'object') {
+                    return `${v.label || k}: ${v.score}/${v.max}`;
+                }
+                return `${k}: ${v}`;
+            }).join(' | ');
+        }
+
+        initApp().then(loadDeals);
+    </script>
+</body>
+</html>

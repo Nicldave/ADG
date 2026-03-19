@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - Fairplay</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <div class="nav-logo">F</div>
+            <h1>Welcome to Fairplay</h1>
+            <p>Enter your email to sign in. We'll send you a magic link.</p>
+
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="email">Email address</label>
+                    <input type="email" id="email" placeholder="you@company.com" required>
+                </div>
+                <button type="submit" class="btn btn-primary" id="submit-btn">Send Login Link</button>
+            </form>
+
+            <div class="login-success" id="success-msg">
+                Check your email for the login link. It expires in 15 minutes.
+            </div>
+
+            <div id="dev-link" style="display:none; margin-top: 20px; padding: 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; font-size: 13px; text-align: left;">
+                <strong>Dev mode:</strong> Email not configured. <a href="#" id="dev-link-url" style="color: #d97706;">Click here to sign in</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        const form = document.getElementById('login-form');
+        const submitBtn = document.getElementById('submit-btn');
+        const successMsg = document.getElementById('success-msg');
+        const devLink = document.getElementById('dev-link');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('email').value.trim();
+            if (!email) return;
+
+            submitBtn.textContent = 'Sending...';
+            submitBtn.disabled = true;
+
+            try {
+                const result = await API.sendMagicLink(email);
+                form.style.display = 'none';
+                successMsg.style.display = 'block';
+
+                // Dev mode: show direct link
+                if (result.dev_link) {
+                    devLink.style.display = 'block';
+                    document.getElementById('dev-link-url').href = result.dev_link;
+                }
+            } catch (err) {
+                alert(err.message);
+                submitBtn.textContent = 'Send Login Link';
+                submitBtn.disabled = false;
+            }
+        });
+
+        // If already logged in, redirect
+        API.getMe().then(user => {
+            if (user && user.has_connections) {
+                window.location.href = '/static/dashboard.html';
+            } else if (user) {
+                window.location.href = '/static/onboarding.html';
+            }
+        }).catch(() => {});
+    </script>
+</body>
+</html>

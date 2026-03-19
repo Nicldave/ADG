@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup - Fairplay</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <div class="onboarding-container">
+        <div class="onboarding-box">
+            <div class="nav-logo" style="margin-bottom: 24px;">F</div>
+            <h1>Let's set up Fairplay</h1>
+            <p>Connect your tools and start scoring calls in minutes.</p>
+
+            <div class="step-indicator">
+                <div class="step-dot active" id="dot-0"></div>
+                <div class="step-dot" id="dot-1"></div>
+                <div class="step-dot" id="dot-2"></div>
+            </div>
+
+            <!-- Step 1: Transcript Source -->
+            <div class="step-panel active" id="step-0">
+                <h2 style="font-size: 18px; margin-bottom: 16px;">Where do your call transcripts come from?</h2>
+                <div class="source-options">
+                    <div class="option-card" data-source="fireflies" onclick="selectSource(this)">
+                        <div class="option-name">Fireflies</div>
+                        <div class="option-desc">Auto-transcription</div>
+                    </div>
+                    <div class="option-card" data-source="gong" onclick="selectSource(this)">
+                        <div class="option-name">Gong</div>
+                        <div class="option-desc">Revenue intelligence</div>
+                    </div>
+                    <div class="option-card" data-source="zoom" onclick="selectSource(this)">
+                        <div class="option-name">Zoom</div>
+                        <div class="option-desc">Cloud recordings</div>
+                    </div>
+                    <div class="option-card" data-source="manual" onclick="selectSource(this)">
+                        <div class="option-name">Manual</div>
+                        <div class="option-desc">Upload transcripts</div>
+                    </div>
+                </div>
+                <div id="source-key-group" class="form-group" style="display: none;">
+                    <label id="source-key-label">API Key</label>
+                    <input type="text" id="source-key" placeholder="Paste your API key here">
+                    <div class="hint" id="source-key-hint"></div>
+                </div>
+                <button class="btn btn-primary" onclick="nextStep()" id="step0-next" disabled>Continue</button>
+            </div>
+
+            <!-- Step 2: CRM -->
+            <div class="step-panel" id="step-1">
+                <h2 style="font-size: 18px; margin-bottom: 16px;">Where should deals be created?</h2>
+                <div class="crm-options">
+                    <div class="option-card" data-crm="attio" onclick="selectCRM(this)">
+                        <div class="option-name">Attio</div>
+                        <div class="option-desc">Modern CRM</div>
+                    </div>
+                    <div class="option-card" data-crm="hubspot" onclick="selectCRM(this)">
+                        <div class="option-name">HubSpot</div>
+                        <div class="option-desc">All-in-one CRM</div>
+                    </div>
+                </div>
+                <div class="form-group" id="crm-key-group" style="display: none;">
+                    <label>CRM API Key</label>
+                    <input type="text" id="crm-key" placeholder="Paste your CRM API key">
+                    <div class="hint">Found in your CRM settings under API/Integrations.</div>
+                </div>
+                <div style="display: flex; gap: 12px;">
+                    <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+                    <button class="btn btn-primary" onclick="nextStep()" id="step1-next" disabled>Continue</button>
+                </div>
+            </div>
+
+            <!-- Step 3: Framework -->
+            <div class="step-panel" id="step-2">
+                <h2 style="font-size: 18px; margin-bottom: 16px;">Pick your scoring framework</h2>
+                <div class="framework-options">
+                    <div class="option-card selected" data-fw="bant" onclick="selectFramework(this)">
+                        <div class="option-name">BANT</div>
+                        <div class="option-desc">Budget, Authority, Need, Timeline</div>
+                    </div>
+                    <div class="option-card" data-fw="meddic" onclick="selectFramework(this)">
+                        <div class="option-name">MEDDIC</div>
+                        <div class="option-desc">Metrics, Economic Buyer, Decision Criteria</div>
+                    </div>
+                    <div class="option-card" data-fw="spiced" onclick="selectFramework(this)">
+                        <div class="option-name">SPICED</div>
+                        <div class="option-desc">Situation, Pain, Impact, Critical Event</div>
+                    </div>
+                    <div class="option-card" data-fw="custom" onclick="selectFramework(this)">
+                        <div class="option-name">Custom</div>
+                        <div class="option-desc">Pain signals, buying intent, budget fit</div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Slack Notifications (optional)</label>
+                    <input type="url" id="slack-webhook" placeholder="https://hooks.slack.com/services/...">
+                    <div class="hint">Get notified in Slack when calls are scored.</div>
+                </div>
+                <div style="display: flex; gap: 12px;">
+                    <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+                    <button class="btn btn-primary" onclick="finishSetup()" id="finish-btn">Start Scoring</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        let currentStep = 0;
+        let config = { source: '', sourceKey: '', crm: '', crmKey: '', framework: 'bant', slackWebhook: '' };
+
+        function selectSource(el) {
+            document.querySelectorAll('.source-options .option-card').forEach(c => c.classList.remove('selected'));
+            el.classList.add('selected');
+            config.source = el.dataset.source;
+
+            const keyGroup = document.getElementById('source-key-group');
+            const keyLabel = document.getElementById('source-key-label');
+            const keyHint = document.getElementById('source-key-hint');
+
+            if (config.source === 'manual') {
+                keyGroup.style.display = 'none';
+                document.getElementById('step0-next').disabled = false;
+            } else {
+                keyGroup.style.display = 'block';
+                keyLabel.textContent = config.source.charAt(0).toUpperCase() + config.source.slice(1) + ' API Key';
+                keyHint.textContent = `Found in your ${config.source.charAt(0).toUpperCase() + config.source.slice(1)} settings.`;
+                document.getElementById('step0-next').disabled = false;
+            }
+        }
+
+        function selectCRM(el) {
+            document.querySelectorAll('.crm-options .option-card').forEach(c => c.classList.remove('selected'));
+            el.classList.add('selected');
+            config.crm = el.dataset.crm;
+            document.getElementById('crm-key-group').style.display = 'block';
+            document.getElementById('step1-next').disabled = false;
+        }
+
+        function selectFramework(el) {
+            document.querySelectorAll('.framework-options .option-card').forEach(c => c.classList.remove('selected'));
+            el.classList.add('selected');
+            config.framework = el.dataset.fw;
+        }
+
+        function nextStep() {
+            // Save current step data
+            if (currentStep === 0) {
+                config.sourceKey = document.getElementById('source-key').value.trim();
+            } else if (currentStep === 1) {
+                config.crmKey = document.getElementById('crm-key').value.trim();
+            }
+
+            document.getElementById(`step-${currentStep}`).classList.remove('active');
+            document.getElementById(`dot-${currentStep}`).classList.remove('active');
+            document.getElementById(`dot-${currentStep}`).classList.add('done');
+            currentStep++;
+            document.getElementById(`step-${currentStep}`).classList.add('active');
+            document.getElementById(`dot-${currentStep}`).classList.add('active');
+        }
+
+        function prevStep() {
+            document.getElementById(`step-${currentStep}`).classList.remove('active');
+            document.getElementById(`dot-${currentStep}`).classList.remove('active');
+            currentStep--;
+            document.getElementById(`step-${currentStep}`).classList.add('active');
+            document.getElementById(`dot-${currentStep}`).classList.remove('done');
+            document.getElementById(`dot-${currentStep}`).classList.add('active');
+        }
+
+        async function finishSetup() {
+            config.slackWebhook = document.getElementById('slack-webhook').value.trim();
+            const btn = document.getElementById('finish-btn');
+            btn.textContent = 'Setting up...';
+            btn.disabled = true;
+
+            try {
+                const payload = {
+                    name: 'My Team',
+                    transcript_source: config.source === 'manual' ? 'fireflies' : config.source,
+                    fireflies_api_key: config.source === 'fireflies' ? config.sourceKey : '',
+                    crm: config.crm,
+                    crm_api_key: config.crmKey,
+                    framework: config.framework,
+                    slack_webhook_url: config.slackWebhook,
+                    auto_create_threshold: 70,
+                };
+
+                // Add source-specific keys
+                if (config.source === 'gong') payload.gong_api_key = config.sourceKey;
+                if (config.source === 'zoom') payload.zoom_webhook_secret = config.sourceKey;
+
+                await API.createConnection(payload);
+                window.location.href = '/static/dashboard.html';
+            } catch (err) {
+                alert('Setup failed: ' + err.message);
+                btn.textContent = 'Start Scoring';
+                btn.disabled = false;
+            }
+        }
+
+        // Check auth
+        API.getMe().then(user => {
+            if (user && user.has_connections) {
+                window.location.href = '/static/dashboard.html';
+            }
+        }).catch(() => {
+            window.location.href = '/static/login.html';
+        });
+    </script>
+</body>
+</html>

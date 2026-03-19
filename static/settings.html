@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - Fairplay</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <div class="app-layout">
+        <nav id="app-nav"></nav>
+        <main class="app-content">
+            <div class="page-header">
+                <h1>Settings</h1>
+                <p>Manage your Fairplay configuration</p>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>Account</h2>
+                </div>
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="user-email" disabled>
+                </div>
+                <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" id="user-name" placeholder="Your name">
+                </div>
+            </div>
+
+            <div class="card" id="connection-card">
+                <div class="card-header">
+                    <h2>Connection</h2>
+                </div>
+                <div id="connection-info" class="loading">Loading...</div>
+            </div>
+
+            <div class="card" style="border-color: #fecaca;">
+                <div class="card-header">
+                    <h2 style="color: #dc2626;">Danger Zone</h2>
+                </div>
+                <p style="font-size: 14px; color: #888; margin-bottom: 16px;">Deleting your connection will stop all scoring and remove your configuration. This cannot be undone.</p>
+                <button class="btn btn-danger btn-sm" onclick="deleteConnection()">Delete Connection</button>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/app.js"></script>
+    <script>
+        async function loadSettings() {
+            // User info
+            if (currentUser) {
+                document.getElementById('user-email').value = currentUser.email;
+                document.getElementById('user-name').value = currentUser.name || '';
+            }
+
+            // Connection info
+            try {
+                const connections = await API.getConnections();
+                const container = document.getElementById('connection-info');
+
+                if (!connections || connections.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <h3>No connection configured</h3>
+                            <p><a href="/static/onboarding.html">Set up your first connection</a></p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const conn = connections[0];
+                container.innerHTML = `
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;">
+                        <div class="form-group">
+                            <label>Transcript Source</label>
+                            <input type="text" value="${(conn.transcript_source || 'fireflies').charAt(0).toUpperCase() + (conn.transcript_source || 'fireflies').slice(1)}" disabled>
+                        </div>
+                        <div class="form-group">
+                            <label>CRM</label>
+                            <input type="text" value="${(conn.crm || '').charAt(0).toUpperCase() + (conn.crm || '').slice(1)}" disabled>
+                        </div>
+                        <div class="form-group">
+                            <label>Framework</label>
+                            <input type="text" value="${(conn.framework || 'custom').toUpperCase()}" disabled>
+                        </div>
+                        <div class="form-group">
+                            <label>Status</label>
+                            <input type="text" value="${conn.active ? 'Active' : 'Inactive'}" disabled>
+                        </div>
+                        <div class="form-group">
+                            <label>Source Connected</label>
+                            <input type="text" value="${conn.source_connected ? 'Yes' : 'No'}" disabled>
+                        </div>
+                        <div class="form-group">
+                            <label>CRM Connected</label>
+                            <input type="text" value="${conn.crm_connected ? 'Yes' : 'No'}" disabled>
+                        </div>
+                    </div>
+                `;
+            } catch (e) {
+                document.getElementById('connection-info').innerHTML = '<p style="color: #dc2626;">Failed to load connection</p>';
+            }
+        }
+
+        async function deleteConnection() {
+            if (!confirm('Are you sure you want to delete your connection? This will stop all scoring.')) return;
+
+            try {
+                const connections = await API.getConnections();
+                if (connections && connections.length > 0) {
+                    await API.deleteConnection(connections[0].webhook_id);
+                    window.location.href = '/static/onboarding.html';
+                }
+            } catch (e) {
+                alert('Failed to delete: ' + e.message);
+            }
+        }
+
+        initApp().then(loadSettings);
+    </script>
+</body>
+</html>
