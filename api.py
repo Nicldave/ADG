@@ -1656,14 +1656,17 @@ def require_user(request: Request) -> dict:
 @app.post("/auth/magic-link")
 def send_magic_link(req: MagicLinkRequest):
     """Send a magic login link to the user's email."""
-    from config import APP_URL, RESEND_API_KEY, MAGIC_LINK_EXPIRY_MINUTES, ALLOWED_EMAILS
+    from config import APP_URL, RESEND_API_KEY, MAGIC_LINK_EXPIRY_MINUTES
     import requests as req_lib
 
     email = req.email.strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Invalid email")
 
-    if ALLOWED_EMAILS and email not in ALLOWED_EMAILS:
+    # Read allowlist fresh each time (Railway env vars may not be available at module load)
+    allowed_raw = os.getenv("ALLOWED_EMAILS", "")
+    allowed = [e.strip().lower() for e in allowed_raw.split(",") if e.strip()]
+    if allowed and email not in allowed:
         raise HTTPException(status_code=403, detail="This email is not authorized. Contact your admin for access.")
 
     if not database.is_available():
