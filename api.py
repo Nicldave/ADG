@@ -1656,12 +1656,15 @@ def require_user(request: Request) -> dict:
 @app.post("/auth/magic-link")
 def send_magic_link(req: MagicLinkRequest):
     """Send a magic login link to the user's email."""
-    from config import APP_URL, RESEND_API_KEY, MAGIC_LINK_EXPIRY_MINUTES
+    from config import APP_URL, RESEND_API_KEY, MAGIC_LINK_EXPIRY_MINUTES, ALLOWED_EMAILS
     import requests as req_lib
 
     email = req.email.strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Invalid email")
+
+    if ALLOWED_EMAILS and email not in ALLOWED_EMAILS:
+        raise HTTPException(status_code=403, detail="This email is not authorized. Contact your admin for access.")
 
     if not database.is_available():
         raise HTTPException(status_code=500, detail="Database not available")

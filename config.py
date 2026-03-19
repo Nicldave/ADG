@@ -78,6 +78,7 @@ APP_URL = os.getenv("APP_URL", "https://web-production-9afb1.up.railway.app")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "168"))  # 7 days
 MAGIC_LINK_EXPIRY_MINUTES = 15
+ALLOWED_EMAILS = [e.strip().lower() for e in os.getenv("ALLOWED_EMAILS", "").split(",") if e.strip()]
 
 # Scoring weights and frameworks are defined in frameworks.py
 
