@@ -146,6 +146,22 @@ def init_db():
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS calibration_results (
+                id SERIAL PRIMARY KEY,
+                deal_id TEXT NOT NULL,
+                deal_name TEXT,
+                company_name TEXT,
+                crm_stage TEXT,
+                transcript_id TEXT,
+                fairplay_score INTEGER,
+                framework TEXT,
+                recommendation TEXT,
+                breakdown JSONB DEFAULT '{}',
+                matched_by TEXT DEFAULT 'company_name',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
         # Migrations
         cur.execute("""
             DO $$

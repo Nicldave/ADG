@@ -78,6 +78,50 @@ def list_calls(since: Optional[datetime] = None, limit: int = 20) -> list[dict]:
     return all_calls
 
 
+def query_deals_by_stage(stages: list, limit: int = 50, api_key: Optional[str] = None) -> list:
+    """
+    Query closed deals from HubSpot by deal stage.
+    stages: list of stage IDs like ['closedwon', 'closedlost']
+    Returns list of dicts with deal_id, name, stage, company_name, close_date, create_date, amount.
+    """
+    all_deals = []
+    for stage in stages:
+        try:
+            payload = {
+                "filterGroups": [{
+                    "filters": [{
+                        "propertyName": "dealstage",
+                        "operator": "EQ",
+                        "value": stage,
+                    }]
+                }],
+                "properties": ["dealname", "dealstage", "closedate", "createdate", "amount", "pipeline"],
+                "limit": limit,
+                "sorts": [{"propertyName": "closedate", "direction": "DESCENDING"}],
+            }
+            url = f"{HUBSPOT_BASE_URL}/crm/v3/objects/deals/search"
+            response = requests.post(url, headers=_headers(api_key), json=payload, timeout=30)
+            if response.status_code != 200:
+                logger.warning(f"HubSpot deal search failed for stage '{stage}': {response.status_code} {response.text}")
+                continue
+            data = response.json()
+            for deal in data.get("results", []):
+                props = deal.get("properties", {})
+                all_deals.append({
+                    "deal_id": deal["id"],
+                    "name": props.get("dealname", ""),
+                    "stage": stage,
+                    "company_name": props.get("dealname", "").split(" - ")[0] if " - " in props.get("dealname", "") else props.get("dealname", ""),
+                    "close_date": props.get("closedate", ""),
+                    "create_date": props.get("createdate", ""),
+                    "amount": props.get("amount", ""),
+                })
+        except Exception as e:
+            logger.error(f"HubSpot deal query failed for stage '{stage}': {e}")
+    logger.info(f"Found {len(all_deals)} HubSpot deals across stages {stages}")
+    return all_deals
+
+
 def get_call(call_id: str) -> dict:
     """Fetch a single call record by ID."""
     url = f"{HUBSPOT_BASE_URL}/crm/v3/objects/calls/{call_id}"

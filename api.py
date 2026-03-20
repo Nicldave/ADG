@@ -1598,6 +1598,272 @@ def list_deals():
     return _load_deals_log()
 
 
+# ── Calibration (historical deal scoring) ─────────────────────────────────────
+
+class CalibrateRequest(BaseModel):
+    days_back: int = Field(90, ge=7, le=365, description="How far back to look for closed deals")
+    framework: str = Field("bant", description="Framework to score with")
+    stages_won: list[str] = Field(default=["closedwon", "Won"], description="Stage names for won deals")
+    stages_lost: list[str] = Field(default=["closedlost", "Lost"], description="Stage names for lost deals")
+
+
+def _normalize_company(name: str) -> str:
+    """Normalize a company name for fuzzy matching."""
+    if not name:
+        return ""
+    import re
+    name = name.lower().strip()
+    # Strip common suffixes
+    for suffix in [" inc", " inc.", " corp", " corp.", " llc", " ltd", " ltd.", " co", " co.",
+                   " corporation", " company", " group", " holdings", " solutions", " technologies"]:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)].strip()
+    name = re.sub(r"[^a-z0-9 ]", "", name).strip()
+    return name
+
+
+def _match_transcript_to_deal(deal_company: str, transcripts: list) -> Optional[dict]:
+    """Find the best matching transcript for a deal based on company name."""
+    norm_deal = _normalize_company(deal_company)
+    if not norm_deal:
+        return None
+    for t in transcripts:
+        title = (t.get("title", "") or "").lower()
+        if norm_deal in title or title in norm_deal:
+            return t
+        # Check participants
+        for p in t.get("participants", []):
+            if norm_deal in (p or "").lower():
+                return t
+    return None
+
+
+def _run_calibration(req_data: dict, conn_dict: dict):
+    """Background task: pull closed deals, match to transcripts, score, produce report."""
+    import time as _time
+    import attio_client
+    import hubspot_client
+
+    framework = req_data["framework"]
+    days_back = req_data["days_back"]
+    crm_name = conn_dict["crm"]
+    crm_key = conn_dict.get("crm_api_key", "")
+    ff_key = conn_dict.get("fireflies_api_key", "")
+    slack_url = conn_dict.get("slack_webhook_url", "")
+
+    # 1. Pull closed deals from CRM
+    won_stages = req_data.get("stages_won", ["closedwon", "Won"])
+    lost_stages = req_data.get("stages_lost", ["closedlost", "Lost"])
+
+    if crm_name == "hubspot":
+        won_deals = hubspot_client.query_deals_by_stage(won_stages, limit=50, api_key=crm_key)
+        lost_deals = hubspot_client.query_deals_by_stage(lost_stages, limit=50, api_key=crm_key)
+    else:
+        won_deals = attio_client.query_deals_by_stage(won_stages, limit=50, api_key=crm_key)
+        lost_deals = attio_client.query_deals_by_stage(lost_stages, limit=50, api_key=crm_key)
+
+    all_deals = won_deals + lost_deals
+    logger.info(f"[Calibration] Found {len(won_deals)} won + {len(lost_deals)} lost = {len(all_deals)} total deals")
+
+    if not all_deals:
+        if slack_url:
+            import requests as req_lib
+            req_lib.post(slack_url, json={"text": ":warning: *Fairplay Calibration:* No closed deals found in the last {days_back} days."}, timeout=10)
+        return
+
+    # 2. Pull transcripts from Fireflies
+    since = datetime.now() - __import__("datetime").timedelta(days=days_back)
+    transcripts = []
+    if ff_key:
+        try:
+            transcripts = fireflies_client.list_transcripts(since=since, limit=100, api_key=ff_key)
+        except Exception as e:
+            logger.error(f"[Calibration] Failed to list transcripts: {e}")
+
+    logger.info(f"[Calibration] Found {len(transcripts)} transcripts in last {days_back} days")
+
+    # 3. Match and score
+    results = []
+    matched = 0
+    for deal in all_deals:
+        company = deal.get("company_name", "")
+        match = _match_transcript_to_deal(company, transcripts)
+        if not match:
+            results.append({"deal": deal, "matched": False, "score": None})
+            continue
+
+        matched += 1
+        tid = match.get("id")
+        try:
+            transcript = fireflies_client.get_transcript(tid, api_key=ff_key)
+            if not transcript:
+                results.append({"deal": deal, "matched": True, "transcript_id": tid, "score": None, "error": "transcript not ready"})
+                continue
+            text = fireflies_client.format_transcript_text(transcript)
+            metadata = fireflies_client.get_meeting_metadata(transcript)
+
+            analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
+            score_result = deal_scorer.score_deal(analysis)
+
+            results.append({
+                "deal": deal,
+                "matched": True,
+                "transcript_id": tid,
+                "score": score_result["total_score"],
+                "recommendation": score_result["recommendation"],
+                "breakdown": score_result.get("breakdown", {}),
+            })
+
+            # Save to calibration_results table
+            if database.is_available():
+                db = database.get_conn()
+                if db:
+                    try:
+                        cur = db.cursor()
+                        cur.execute(
+                            """INSERT INTO calibration_results
+                               (deal_id, deal_name, company_name, crm_stage, transcript_id,
+                                fairplay_score, framework, recommendation, breakdown)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (deal["deal_id"], deal["name"], company, deal["stage"], tid,
+                             score_result["total_score"], framework, score_result["recommendation"],
+                             json.dumps(score_result.get("breakdown", {}))),
+                        )
+                        db.commit()
+                        cur.close()
+                    except Exception:
+                        db.rollback()
+                    finally:
+                        database.put_conn(db)
+
+            _time.sleep(2)  # Rate limit
+        except Exception as e:
+            logger.warning(f"[Calibration] Failed to score transcript {tid}: {e}")
+            results.append({"deal": deal, "matched": True, "transcript_id": tid, "score": None, "error": str(e)})
+
+    # 4. Generate report
+    scored_won = [r for r in results if r["deal"]["stage"] in won_stages and r.get("score") is not None]
+    scored_lost = [r for r in results if r["deal"]["stage"] in lost_stages and r.get("score") is not None]
+    avg_won = sum(r["score"] for r in scored_won) / len(scored_won) if scored_won else 0
+    avg_lost = sum(r["score"] for r in scored_lost) / len(scored_lost) if scored_lost else 0
+
+    # Accuracy: would Fairplay's recommendation have matched the actual outcome?
+    correct = 0
+    total_scored = len(scored_won) + len(scored_lost)
+    for r in scored_won:
+        if r.get("recommendation") in ("auto_create", "needs_review"):
+            correct += 1
+    for r in scored_lost:
+        if r.get("recommendation") == "not_a_deal":
+            correct += 1
+    accuracy = (correct / total_scored * 100) if total_scored > 0 else 0
+
+    logger.info(f"[Calibration] Complete. {matched}/{len(all_deals)} matched, accuracy: {accuracy:.0f}%")
+
+    # 5. Post to Slack
+    if slack_url:
+        import requests as req_lib
+        report_text = (
+            f":bar_chart: *Fairplay Calibration Report*\n"
+            f"Framework: {framework.upper()} | Last {days_back} days\n\n"
+            f"*Deals analyzed:* {len(all_deals)} ({len(won_deals)} won, {len(lost_deals)} lost)\n"
+            f"*Transcripts matched:* {matched}/{len(all_deals)}\n"
+            f"*Scored:* {total_scored}\n\n"
+            f"*Avg score (won deals):* {avg_won:.0f}/100\n"
+            f"*Avg score (lost deals):* {avg_lost:.0f}/100\n"
+            f"*Score gap:* {avg_won - avg_lost:.0f} points\n\n"
+            f"*Accuracy:* {accuracy:.0f}% (Fairplay recommendation matched actual outcome)\n"
+        )
+        if scored_won:
+            top_won = sorted(scored_won, key=lambda x: x["score"], reverse=True)[:3]
+            report_text += "\n*Top scored won deals:*\n"
+            for r in top_won:
+                report_text += f"  {r['deal']['name']}: {r['score']}/100\n"
+        if scored_lost:
+            top_lost = sorted(scored_lost, key=lambda x: x["score"], reverse=True)[:3]
+            report_text += "\n*Highest scored lost deals (potential false positives):*\n"
+            for r in top_lost:
+                report_text += f"  {r['deal']['name']}: {r['score']}/100\n"
+
+        try:
+            req_lib.post(slack_url, json={"text": report_text}, timeout=10)
+        except Exception as e:
+            logger.warning(f"Calibration Slack notification failed: {e}")
+
+
+@app.post("/calibrate", dependencies=[Depends(require_api_key)])
+def calibrate(req: CalibrateRequest, background_tasks: BackgroundTasks):
+    """Run calibration: score historical closed deals and produce accuracy report."""
+    conn = _build_default_connection()
+    if not conn["fireflies_api_key"]:
+        raise HTTPException(status_code=400, detail="FIREFLIES_API_KEY not configured")
+
+    req_data = {
+        "days_back": req.days_back,
+        "framework": req.framework,
+        "stages_won": req.stages_won,
+        "stages_lost": req.stages_lost,
+    }
+    background_tasks.add_task(_run_calibration, req_data, conn)
+    return {"status": "calibrating", "message": "Results will appear in Slack and /calibrate/report"}
+
+
+@app.get("/calibrate/report", dependencies=[Depends(require_api_key)])
+def calibration_report():
+    """Get the latest calibration results."""
+    if not database.is_available():
+        return {"results": [], "summary": {}}
+
+    conn = database.get_conn()
+    if not conn:
+        return {"results": [], "summary": {}}
+
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT deal_id, deal_name, company_name, crm_stage, transcript_id,
+                   fairplay_score, framework, recommendation, breakdown, created_at
+            FROM calibration_results
+            ORDER BY created_at DESC
+            LIMIT 200
+        """)
+        rows = cur.fetchall()
+        cur.close()
+
+        results = []
+        won_scores = []
+        lost_scores = []
+        for r in rows:
+            entry = {
+                "deal_id": r[0], "deal_name": r[1], "company_name": r[2],
+                "crm_stage": r[3], "transcript_id": r[4], "fairplay_score": r[5],
+                "framework": r[6], "recommendation": r[7],
+                "breakdown": r[8] if isinstance(r[8], dict) else json.loads(r[8] or "{}"),
+                "created_at": r[9].isoformat() if r[9] else "",
+            }
+            results.append(entry)
+            if "won" in (r[3] or "").lower():
+                won_scores.append(r[5] or 0)
+            elif "lost" in (r[3] or "").lower():
+                lost_scores.append(r[5] or 0)
+
+        summary = {
+            "total": len(results),
+            "won_count": len(won_scores),
+            "lost_count": len(lost_scores),
+            "avg_won_score": round(sum(won_scores) / len(won_scores)) if won_scores else 0,
+            "avg_lost_score": round(sum(lost_scores) / len(lost_scores)) if lost_scores else 0,
+            "score_gap": round((sum(won_scores) / len(won_scores)) - (sum(lost_scores) / len(lost_scores))) if won_scores and lost_scores else 0,
+        }
+
+        return {"results": results, "summary": summary}
+    except Exception as e:
+        logger.warning(f"Calibration report failed: {e}")
+        return {"results": [], "summary": {}}
+    finally:
+        database.put_conn(conn)
+
+
 # ── Transcript polling worker ─────────────────────────────────────────────────
 
 def _poll_all_connections():

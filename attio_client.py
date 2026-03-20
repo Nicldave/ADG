@@ -130,6 +130,44 @@ def find_contact_by_name(name: str, company_name: Optional[str] = None, api_key:
     return None
 
 
+def query_deals_by_stage(stages: list, limit: int = 50, api_key: Optional[str] = None) -> list:
+    """
+    Query closed deals from Attio by stage name.
+    stages: list of stage names like ['Won', 'Lost', 'Former Customer']
+    Returns list of dicts with deal_id, name, stage, company_name, close_date.
+    """
+    all_deals = []
+    for stage in stages:
+        try:
+            payload = {
+                "filter": {"stage": {"status": {"title": stage}}},
+                "limit": limit,
+            }
+            data = _attio_request("POST", "/objects/deals/records/query", payload, api_key=api_key)
+            for deal in data.get("data", []):
+                record_id = deal["id"]["record_id"]
+                values = deal.get("values", {})
+                name_vals = values.get("name", [])
+                deal_name = name_vals[0].get("value", "") if name_vals else ""
+                # Extract company name from deal name (format: NN-Company-Rep-Date)
+                parts = deal_name.split("-")
+                company = parts[1] if len(parts) >= 2 else deal_name
+                created = deal["id"].get("created_at", "")
+                all_deals.append({
+                    "deal_id": record_id,
+                    "name": deal_name,
+                    "stage": stage,
+                    "company_name": company.strip(),
+                    "close_date": created,
+                    "create_date": created,
+                    "amount": "",
+                })
+        except Exception as e:
+            logger.warning(f"Attio deal query failed for stage '{stage}': {e}")
+    logger.info(f"Found {len(all_deals)} Attio deals across stages {stages}")
+    return all_deals
+
+
 # --- Deal Creation ---
 
 def create_deal(
