@@ -5,6 +5,38 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Setup - Fairplay</title>
     <link rel="stylesheet" href="/static/css/app.css">
+    <style>
+        .help-toggle {
+            display: inline-block;
+            color: #3b82f6;
+            font-size: 13px;
+            cursor: pointer;
+            margin-top: 6px;
+            font-weight: 500;
+        }
+        .help-toggle:hover { text-decoration: underline; }
+        .help-content {
+            display: none;
+            margin-top: 10px;
+            padding: 14px;
+            background: #f8f9fa;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.7;
+            color: #555;
+        }
+        .help-content.open { display: block; }
+        .help-content ol { padding-left: 18px; margin: 0; }
+        .help-content li { margin-bottom: 4px; }
+        .help-content strong { color: #1a1a1a; }
+        .help-content code {
+            background: #e5e7eb;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+    </style>
 </head>
 <body>
     <div class="onboarding-container">
@@ -44,6 +76,36 @@
                     <label id="source-key-label">API Key</label>
                     <input type="text" id="source-key" placeholder="Paste your API key here">
                     <div class="hint" id="source-key-hint"></div>
+                    <span class="help-toggle" onclick="toggleHelp('source-help')">How do I get this?</span>
+                    <div class="help-content" id="source-help">
+                        <div id="help-fireflies" style="display:none;">
+                            <ol>
+                                <li>Go to <strong>app.fireflies.ai</strong> and log in</li>
+                                <li>Click your profile icon (top right) then <strong>Settings</strong></li>
+                                <li>Go to <strong>Developer Settings</strong> (or API & Integrations)</li>
+                                <li>Copy your <strong>API Key</strong> and paste it above</li>
+                            </ol>
+                        </div>
+                        <div id="help-zoom" style="display:none;">
+                            <ol>
+                                <li>Go to <strong>marketplace.zoom.us</strong> and sign in</li>
+                                <li>Click <strong>Develop > Build App</strong></li>
+                                <li>Choose <strong>Webhook Only</strong> app type</li>
+                                <li>Name it "Fairplay" and create it</li>
+                                <li>Under <strong>Feature</strong>, add the event: <code>recording.transcript_completed</code></li>
+                                <li>You'll set the webhook URL after this setup completes</li>
+                                <li>Copy the <strong>Secret Token</strong> from the app page and paste it above</li>
+                            </ol>
+                        </div>
+                        <div id="help-gong" style="display:none;">
+                            <ol>
+                                <li>Go to <strong>app.gong.io</strong> and log in as admin</li>
+                                <li>Go to <strong>Settings > API</strong></li>
+                                <li>Click <strong>Create API Key</strong></li>
+                                <li>Copy the <strong>Access Key</strong> and paste it above</li>
+                            </ol>
+                        </div>
+                    </div>
                 </div>
                 <button class="btn btn-primary" onclick="nextStep()" id="step0-next" disabled>Continue</button>
             </div>
@@ -62,9 +124,38 @@
                     </div>
                 </div>
                 <div class="form-group" id="crm-key-group" style="display: none;">
-                    <label>CRM API Key</label>
+                    <label id="crm-key-label">CRM API Key</label>
                     <input type="text" id="crm-key" placeholder="Paste your CRM API key">
-                    <div class="hint">Found in your CRM settings under API/Integrations.</div>
+                    <span class="help-toggle" onclick="toggleHelp('crm-help')">How do I get this?</span>
+                    <div class="help-content" id="crm-help">
+                        <div id="help-attio" style="display:none;">
+                            <ol>
+                                <li>Go to <strong>app.attio.com</strong> and log in</li>
+                                <li>Click <strong>Settings</strong> (gear icon, bottom left)</li>
+                                <li>Go to <strong>Developers > API Keys</strong></li>
+                                <li>Click <strong>Generate new API key</strong></li>
+                                <li>Give it read/write access to Deals, Companies, and People</li>
+                                <li>Copy the key and paste it above</li>
+                            </ol>
+                        </div>
+                        <div id="help-hubspot" style="display:none;">
+                            <ol>
+                                <li>Go to <strong>app.hubspot.com</strong> and log in</li>
+                                <li>Click <strong>Settings</strong> (gear icon, top right)</li>
+                                <li>Go to <strong>Integrations > Private Apps</strong></li>
+                                <li>Click <strong>Create a private app</strong></li>
+                                <li>Name it "Fairplay"</li>
+                                <li>Under <strong>Scopes</strong>, add:
+                                    <code>crm.objects.deals.write</code>,
+                                    <code>crm.objects.deals.read</code>,
+                                    <code>crm.objects.contacts.read</code>,
+                                    <code>crm.objects.companies.read</code>
+                                </li>
+                                <li>Click <strong>Create app</strong>, then copy the <strong>Access token</strong></li>
+                                <li>Paste the token above</li>
+                            </ol>
+                        </div>
+                    </div>
                 </div>
                 <div style="display: flex; gap: 12px;">
                     <button class="btn btn-secondary" onclick="prevStep()">Back</button>
@@ -72,7 +163,7 @@
                 </div>
             </div>
 
-            <!-- Step 3: Framework -->
+            <!-- Step 3: Framework + Slack + Shadow -->
             <div class="step-panel" id="step-2">
                 <h2 style="font-size: 18px; margin-bottom: 16px;">Pick your scoring framework</h2>
                 <div class="framework-options">
@@ -97,18 +188,48 @@
                     <label>Slack Notifications (optional)</label>
                     <input type="url" id="slack-webhook" placeholder="https://hooks.slack.com/services/...">
                     <div class="hint">Get notified in Slack when calls are scored.</div>
+                    <span class="help-toggle" onclick="toggleHelp('slack-help')">How do I set this up?</span>
+                    <div class="help-content" id="slack-help">
+                        <ol>
+                            <li>Go to <strong>api.slack.com/apps</strong> and sign in to your workspace</li>
+                            <li>Click <strong>Create New App > From scratch</strong></li>
+                            <li>Name it "Fairplay" and select your workspace</li>
+                            <li>Go to <strong>Incoming Webhooks</strong> in the left sidebar</li>
+                            <li>Toggle <strong>Activate Incoming Webhooks</strong> to On</li>
+                            <li>Click <strong>Add New Webhook to Workspace</strong></li>
+                            <li>Select the channel where you want notifications (e.g. #deals)</li>
+                            <li>Copy the <strong>Webhook URL</strong> and paste it above</li>
+                        </ol>
+                        <p style="margin-top: 8px;">Already have a Slack app? Just add an Incoming Webhook to it from the app settings.</p>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                         <input type="checkbox" id="shadow-mode" checked style="width: auto;">
                         <span>Start in Shadow Mode (recommended)</span>
                     </label>
-                    <div class="hint">Score calls without writing to your CRM for the first 30 days. See what Fairplay would do before going live.</div>
+                    <div class="hint">Score calls without writing to your CRM for the first 30 days. See what Fairplay would do before going live. You can turn this off anytime in Settings.</div>
                 </div>
                 <div style="display: flex; gap: 12px;">
                     <button class="btn btn-secondary" onclick="prevStep()">Back</button>
                     <button class="btn btn-primary" onclick="finishSetup()" id="finish-btn">Start Scoring</button>
                 </div>
+            </div>
+
+            <!-- Post-setup: Zoom webhook URL -->
+            <div class="step-panel" id="step-done" style="text-align: center;">
+                <div style="font-size: 48px; margin-bottom: 16px;">&#9989;</div>
+                <h2 style="font-size: 22px; margin-bottom: 12px;">You're all set!</h2>
+                <p style="color: #666; margin-bottom: 24px;">Fairplay will start scoring your calls automatically.</p>
+                <div id="zoom-webhook-info" style="display: none; text-align: left; margin-bottom: 24px;">
+                    <div class="card" style="background: #fffbeb; border-color: #fde68a;">
+                        <strong style="color: #92400e;">One more step for Zoom:</strong>
+                        <p style="margin: 8px 0; font-size: 13px; color: #78350f;">Add this webhook URL to your Zoom app settings:</p>
+                        <code id="zoom-webhook-url" style="display: block; padding: 10px; background: white; border-radius: 6px; font-size: 12px; word-break: break-all; border: 1px solid #fde68a;"></code>
+                        <button class="btn btn-sm btn-secondary" style="margin-top: 8px;" onclick="navigator.clipboard.writeText(document.getElementById('zoom-webhook-url').textContent)">Copy URL</button>
+                    </div>
+                </div>
+                <a href="/static/dashboard.html" class="btn btn-primary">Go to Dashboard</a>
             </div>
         </div>
     </div>
@@ -117,6 +238,11 @@
     <script>
         let currentStep = 0;
         let config = { source: '', sourceKey: '', crm: '', crmKey: '', framework: 'bant', slackWebhook: '' };
+
+        function toggleHelp(id) {
+            const el = document.getElementById(id);
+            el.classList.toggle('open');
+        }
 
         function selectSource(el) {
             document.querySelectorAll('.source-options .option-card').forEach(c => c.classList.remove('selected'));
@@ -127,14 +253,30 @@
             const keyLabel = document.getElementById('source-key-label');
             const keyHint = document.getElementById('source-key-hint');
 
+            // Hide all source help sections
+            document.querySelectorAll('[id^="help-"]').forEach(h => h.style.display = 'none');
+            document.getElementById('source-help').classList.remove('open');
+
             if (config.source === 'manual') {
                 keyGroup.style.display = 'none';
                 document.getElementById('step0-next').disabled = false;
             } else {
                 keyGroup.style.display = 'block';
-                keyLabel.textContent = config.source.charAt(0).toUpperCase() + config.source.slice(1) + ' API Key';
-                keyHint.textContent = `Found in your ${config.source.charAt(0).toUpperCase() + config.source.slice(1)} settings.`;
                 document.getElementById('step0-next').disabled = false;
+
+                if (config.source === 'fireflies') {
+                    keyLabel.textContent = 'Fireflies API Key';
+                    keyHint.textContent = 'Found in Fireflies Settings > Developer Settings.';
+                    document.getElementById('help-fireflies').style.display = 'block';
+                } else if (config.source === 'zoom') {
+                    keyLabel.textContent = 'Zoom Webhook Secret Token';
+                    keyHint.textContent = 'From your Zoom Marketplace Webhook Only app.';
+                    document.getElementById('help-zoom').style.display = 'block';
+                } else if (config.source === 'gong') {
+                    keyLabel.textContent = 'Gong API Access Key';
+                    keyHint.textContent = 'Found in Gong Settings > API.';
+                    document.getElementById('help-gong').style.display = 'block';
+                }
             }
         }
 
@@ -144,6 +286,14 @@
             config.crm = el.dataset.crm;
             document.getElementById('crm-key-group').style.display = 'block';
             document.getElementById('step1-next').disabled = false;
+
+            // Show correct CRM help
+            document.getElementById('help-attio').style.display = config.crm === 'attio' ? 'block' : 'none';
+            document.getElementById('help-hubspot').style.display = config.crm === 'hubspot' ? 'block' : 'none';
+            document.getElementById('crm-help').classList.remove('open');
+
+            // Update label
+            document.getElementById('crm-key-label').textContent = config.crm === 'hubspot' ? 'HubSpot Private App Token' : 'Attio API Key';
         }
 
         function selectFramework(el) {
@@ -153,7 +303,6 @@
         }
 
         function nextStep() {
-            // Save current step data
             if (currentStep === 0) {
                 config.sourceKey = document.getElementById('source-key').value.trim();
             } else if (currentStep === 1) {
@@ -197,12 +346,21 @@
                     shadow_mode: config.shadowMode,
                 };
 
-                // Add source-specific keys
                 if (config.source === 'gong') payload.gong_api_key = config.sourceKey;
                 if (config.source === 'zoom') payload.zoom_webhook_secret = config.sourceKey;
 
-                await API.createConnection(payload);
-                window.location.href = '/static/dashboard.html';
+                const result = await API.createConnection(payload);
+
+                // Show completion screen
+                document.getElementById('step-2').classList.remove('active');
+                document.getElementById('step-done').classList.add('active');
+                document.querySelectorAll('.step-dot').forEach(d => d.classList.add('done'));
+
+                // If Zoom, show the webhook URL they need to configure
+                if (config.source === 'zoom' && result.webhook_url) {
+                    document.getElementById('zoom-webhook-info').style.display = 'block';
+                    document.getElementById('zoom-webhook-url').textContent = result.webhook_url;
+                }
             } catch (err) {
                 alert('Setup failed: ' + err.message);
                 btn.textContent = 'Start Scoring';
