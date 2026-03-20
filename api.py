@@ -269,6 +269,7 @@ class ConnectionRequest(BaseModel):
     gong_api_secret: Optional[str] = Field("", description="Gong API secret (access key secret)")
     teams_access_token: Optional[str] = Field("", description="Microsoft Graph API access token")
     google_access_token: Optional[str] = Field("", description="Google OAuth access token")
+    shadow_mode: bool = Field(False, description="Shadow mode: score calls without writing to CRM")
 
 
 class ConnectionResponse(BaseModel):
@@ -279,6 +280,7 @@ class ConnectionResponse(BaseModel):
     framework: str
     transcript_source: str
     active: bool
+    shadow_mode: bool = False
 
 
 def _get_base_url() -> str:
@@ -336,6 +338,7 @@ def create_connection(req: ConnectionRequest, request: Request):
         gong_api_secret=req.gong_api_secret or "",
         teams_access_token=req.teams_access_token or "",
         google_access_token=req.google_access_token or "",
+        shadow_mode=req.shadow_mode,
     )
 
     # Link connection to user if logged in via session
@@ -366,7 +369,23 @@ def create_connection(req: ConnectionRequest, request: Request):
         framework=conn["framework"],
         transcript_source=conn["transcript_source"],
         active=conn["active"],
+        shadow_mode=conn.get("shadow_mode", False),
     )
+
+
+@app.put("/connections/{webhook_id}")
+def update_connection_endpoint(webhook_id: str, updates: dict, request: Request):
+    """Update a connection. Use to toggle shadow_mode, change framework, etc."""
+    user = _get_user_from_session(request)
+    api_key = request.headers.get("x-api-key", "")
+    dealsmart_key = os.getenv("DEALSMART_API_KEY", "")
+    if not user and not (dealsmart_key and api_key == dealsmart_key) and dealsmart_key:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    result = connections.update_connection(webhook_id, updates)
+    if not result:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    return {"status": "updated", "webhook_id": webhook_id}
 
 
 @app.get("/connections", dependencies=[Depends(require_api_key)])
@@ -587,17 +606,20 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
                 f"(call #{len(previous_scores) + 1})"
             )
         elif score >= REVIEW_THRESHOLD:
-            # No existing deal, score meets threshold, create new
+            # No existing deal, score meets threshold
+            is_shadow = conn.get("shadow_mode", False)
             crm_client = crm_factory.get_client(crm_name)
             result = crm_client.create_deal(
-                score_result, analysis, metadata, dry_run=False, api_key=crm_key
+                score_result, analysis, metadata, dry_run=is_shadow, api_key=crm_key
             )
-            if result:
+            if result and not is_shadow:
                 deal_id = result.get("deal_id")
                 logger.info(
                     f"[{conn['name']}] Deal created: {result.get('deal_name')} "
                     f"(ID: {deal_id})"
                 )
+            elif is_shadow:
+                logger.info(f"[{conn['name']}] SHADOW: Would create deal '{result.get('deal_name')}' (score: {score})")
             else:
                 logger.warning(f"[{conn['name']}] Deal creation returned None for transcript {transcript_id}")
         else:
@@ -610,11 +632,13 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         _mark_processed(transcript_id, conn.get("name", "Default"), score=score, status="success")
 
         # 5. Slack notification (if configured)
+        is_shadow = conn.get("shadow_mode", False)
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
             _send_slack_notification(
                 slack_url, score_result, analysis, metadata,
                 deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
+                shadow_mode=is_shadow,
             )
 
     except Exception as e:
@@ -670,7 +694,7 @@ def _find_existing_deal(company_name: str, crm_name: str, crm_key: Optional[str]
 def _send_slack_notification(
     webhook_url: str, score_result: dict, analysis: dict, metadata: dict,
     deal_id: Optional[str] = None, existing_deal: Optional[dict] = None,
-    previous_scores: Optional[list] = None,
+    previous_scores: Optional[list] = None, shadow_mode: bool = False,
 ):
     """Post a summary to Slack with feedback links and follow-up context."""
     import requests as req_lib
@@ -693,6 +717,17 @@ def _send_slack_notification(
         breakdown_parts.append(f"{label}: {data['score']}/{data['max']}")
     breakdown_line = " | ".join(breakdown_parts) if breakdown_parts else "N/A"
 
+    # Shadow mode prefix
+    shadow_line = ""
+    if shadow_mode:
+        shadow_line = ":ghost: *SHADOW MODE* (scoring only, no CRM writes)\n"
+        if score >= 70:
+            shadow_line += ":white_check_mark: _Would auto-create deal_\n"
+        elif score >= 50:
+            shadow_line += ":warning: _Would route to Needs Review_\n"
+        else:
+            shadow_line += ":no_entry_sign: _Would not create deal_\n"
+
     # Follow-up context
     followup_line = ""
     if existing_deal:
@@ -702,8 +737,10 @@ def _send_slack_notification(
         call_num = len(previous_scores) + 1
         followup_line += f":chart_with_upwards_trend: Call #{call_num} | Score history: {prev_scores_str} > *{score}*\n"
 
+    header = "Fairplay SHADOW" if shadow_mode else "Fairplay"
     text = (
-        f"{emoji} *DealSmart: {title}*\n"
+        f"{emoji} *{header}: {title}*\n"
+        f"{shadow_line}"
         f"{followup_line}"
         f"Score: *{score}/100* ({framework_name}) | Recommendation: *{rec}*\n"
         f"Deal: {deal_name}\n"
@@ -985,13 +1022,16 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
                 f"(call #{len(previous_scores) + 1})"
             )
         elif score >= REVIEW_THRESHOLD:
+            is_shadow = conn.get("shadow_mode", False)
             crm_client = crm_factory.get_client(crm_name)
             result = crm_client.create_deal(
-                score_result, analysis, metadata, dry_run=False, api_key=crm_key
+                score_result, analysis, metadata, dry_run=is_shadow, api_key=crm_key
             )
-            if result:
+            if result and not is_shadow:
                 deal_id = result.get("deal_id")
                 logger.info(f"[{conn['name']}] Deal created: {result.get('deal_name')}")
+            elif is_shadow:
+                logger.info(f"[{conn['name']}] SHADOW: Would create deal '{result.get('deal_name')}' (score: {score})")
             else:
                 logger.warning(f"[{conn['name']}] Deal creation returned None")
         else:
@@ -999,11 +1039,13 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
 
         _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
 
+        is_shadow = conn.get("shadow_mode", False)
         slack_url = conn.get("slack_webhook_url")
         if slack_url:
             _send_slack_notification(
                 slack_url, score_result, analysis, metadata,
                 deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
+                shadow_mode=is_shadow,
             )
 
     except Exception as e:

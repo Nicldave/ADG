@@ -98,6 +98,13 @@
                     <input type="url" id="slack-webhook" placeholder="https://hooks.slack.com/services/...">
                     <div class="hint">Get notified in Slack when calls are scored.</div>
                 </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                        <input type="checkbox" id="shadow-mode" checked style="width: auto;">
+                        <span>Start in Shadow Mode (recommended)</span>
+                    </label>
+                    <div class="hint">Score calls without writing to your CRM for the first 30 days. See what Fairplay would do before going live.</div>
+                </div>
                 <div style="display: flex; gap: 12px;">
                     <button class="btn btn-secondary" onclick="prevStep()">Back</button>
                     <button class="btn btn-primary" onclick="finishSetup()" id="finish-btn">Start Scoring</button>
@@ -172,6 +179,7 @@
 
         async function finishSetup() {
             config.slackWebhook = document.getElementById('slack-webhook').value.trim();
+            config.shadowMode = document.getElementById('shadow-mode').checked;
             const btn = document.getElementById('finish-btn');
             btn.textContent = 'Setting up...';
             btn.disabled = true;
@@ -186,6 +194,7 @@
                     framework: config.framework,
                     slack_webhook_url: config.slackWebhook,
                     auto_create_threshold: 70,
+                    shadow_mode: config.shadowMode,
                 };
 
                 // Add source-specific keys

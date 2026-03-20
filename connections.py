@@ -25,7 +25,7 @@ _CONN_FIELDS = [
     "name", "transcript_source", "fireflies_api_key", "crm", "crm_api_key",
     "framework", "auto_create_threshold", "notify_slack", "slack_webhook_url",
     "zoom_webhook_secret", "gong_api_key", "gong_api_secret",
-    "teams_access_token", "google_access_token", "active",
+    "teams_access_token", "google_access_token", "active", "shadow_mode",
 ]
 
 
@@ -74,6 +74,7 @@ def create_connection(
     gong_api_secret: str = "",
     teams_access_token: str = "",
     google_access_token: str = "",
+    shadow_mode: bool = False,
 ) -> dict:
     """
     Register a new connection (team/user config).
@@ -99,6 +100,7 @@ def create_connection(
         "google_access_token": google_access_token,
         "webhook_id": webhook_id,
         "active": True,
+        "shadow_mode": shadow_mode,
     }
 
     if _use_pg():
@@ -110,12 +112,12 @@ def create_connection(
                 """INSERT INTO connections (webhook_id, name, transcript_source, fireflies_api_key,
                    crm, crm_api_key, framework, auto_create_threshold, notify_slack,
                    slack_webhook_url, zoom_webhook_secret, gong_api_key, gong_api_secret,
-                   teams_access_token, google_access_token, active)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   teams_access_token, google_access_token, active, shadow_mode)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (webhook_id, name, transcript_source, fireflies_api_key,
                  crm, crm_api_key, framework, auto_create_threshold, notify_slack,
                  slack_webhook_url, zoom_webhook_secret, gong_api_key, gong_api_secret,
-                 teams_access_token, google_access_token, True),
+                 teams_access_token, google_access_token, True, shadow_mode),
             )
             db.commit()
             cur.close()

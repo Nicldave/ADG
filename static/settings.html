@@ -90,6 +90,13 @@
                             <label>Status</label>
                             <input type="text" value="${conn.active ? 'Active' : 'Inactive'}" disabled>
                         </div>
+                        <div class="form-group" style="grid-column: span 2;">
+                            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                <input type="checkbox" id="shadow-toggle" ${conn.shadow_mode ? 'checked' : ''} style="width: auto;" onchange="toggleShadow('${conn.webhook_id}', this.checked)">
+                                <span>Shadow Mode ${conn.shadow_mode ? '(active, no CRM writes)' : '(off, deals are created live)'}</span>
+                            </label>
+                            <div class="hint">When enabled, Fairplay scores calls but does not write deals to your CRM. Disable to go live.</div>
+                        </div>
                         <div class="form-group">
                             <label>Source Connected</label>
                             <input type="text" value="${conn.source_connected ? 'Yes' : 'No'}" disabled>
@@ -102,6 +109,15 @@
                 `;
             } catch (e) {
                 document.getElementById('connection-info').innerHTML = '<p style="color: #dc2626;">Failed to load connection</p>';
+            }
+        }
+
+        async function toggleShadow(webhookId, enabled) {
+            try {
+                await API.request('PUT', `/connections/${webhookId}`, { shadow_mode: enabled });
+                location.reload();
+            } catch (e) {
+                alert('Failed to update: ' + e.message);
             }
         }
 

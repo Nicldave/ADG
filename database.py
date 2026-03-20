@@ -146,7 +146,7 @@ def init_db():
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
         """)
-        # Migration: add user_id to connections
+        # Migrations
         cur.execute("""
             DO $$
             BEGIN
@@ -155,6 +155,12 @@ def init_db():
                     WHERE table_name = 'connections' AND column_name = 'user_id'
                 ) THEN
                     ALTER TABLE connections ADD COLUMN user_id TEXT DEFAULT '';
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'shadow_mode'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN shadow_mode BOOLEAN DEFAULT FALSE;
                 END IF;
             END $$;
         """)
