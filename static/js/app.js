@@ -1,6 +1,19 @@
 // Fairplay App Shell - shared across all app pages
 let currentUser = null;
 
+// Grab token from URL hash (after magic link redirect) and store in localStorage
+(function() {
+    const hash = window.location.hash;
+    if (hash && hash.includes('token=')) {
+        const token = hash.split('token=')[1].split('&')[0];
+        if (token) {
+            API.setToken(token);
+            // Clean the URL
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+    }
+})();
+
 async function initApp() {
     try {
         currentUser = await API.getMe();

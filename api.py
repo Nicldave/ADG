@@ -2072,8 +2072,14 @@ class MagicLinkRequest(BaseModel):
 
 
 def _get_user_from_session(request: Request) -> Optional[dict]:
-    """Extract user from session cookie. Returns None if not authenticated."""
-    token = request.cookies.get("fp_session")
+    """Extract user from session cookie or Authorization header. Returns None if not authenticated."""
+    # Check Authorization header first (cross-domain / Lovable support)
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    else:
+        # Fall back to cookie (same-domain)
+        token = request.cookies.get("fp_session")
     if not token or not database.is_available():
         return None
     conn = database.get_conn()
@@ -2231,8 +2237,8 @@ def verify_magic_link(token: str, response: Response):
     finally:
         database.put_conn(conn)
 
-    # Redirect to app with session cookie
-    redirect = RedirectResponse(url="/static/dashboard.html", status_code=302)
+    # Redirect to app with token in URL fragment (for localStorage) + set cookie (for same-domain)
+    redirect = RedirectResponse(url=f"/static/dashboard.html#token={session_token}", status_code=302)
     redirect.set_cookie(
         key="fp_session",
         value=session_token,

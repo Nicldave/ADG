@@ -1,13 +1,26 @@
 // Fairplay API Client
+// Supports both same-domain (cookie) and cross-domain (token) auth
 const API = {
     base: window.location.origin,
+
+    // Token stored in localStorage for cross-domain support
+    getToken() { return localStorage.getItem('fp_token') || ''; },
+    setToken(token) { localStorage.setItem('fp_token', token); },
+    clearToken() { localStorage.removeItem('fp_token'); },
 
     async request(method, path, body = null) {
         const opts = {
             method,
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
+            credentials: 'include', // Still send cookies for same-domain
         };
+
+        // Add token header if available (for cross-domain / Lovable)
+        const token = this.getToken();
+        if (token) {
+            opts.headers['Authorization'] = `Bearer ${token}`;
+        }
+
         if (body) opts.body = JSON.stringify(body);
 
         const res = await fetch(this.base + path, opts);
@@ -34,7 +47,10 @@ const API = {
     // Auth
     sendMagicLink(email) { return this.post('/auth/magic-link', { email }); },
     getMe() { return this.get('/auth/me'); },
-    logout() { return this.post('/auth/logout'); },
+    async logout() {
+        await this.post('/auth/logout');
+        this.clearToken();
+    },
 
     // Connections
     getConnections() { return this.get('/connections'); },
