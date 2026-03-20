@@ -76,6 +76,25 @@
                     <label id="source-key-label">API Key</label>
                     <input type="text" id="source-key" placeholder="Paste your API key here">
                     <div class="hint" id="source-key-hint"></div>
+                    <!-- Zoom-specific OAuth fields -->
+                    <div id="zoom-oauth-fields" style="display: none; margin-top: 12px;">
+                        <div class="form-group">
+                            <label>Zoom Account ID</label>
+                            <input type="text" id="zoom-account-id" placeholder="Your Zoom Account ID">
+                        </div>
+                        <div class="form-group">
+                            <label>Zoom Client ID</label>
+                            <input type="text" id="zoom-client-id" placeholder="Your Zoom Client ID">
+                        </div>
+                        <div class="form-group">
+                            <label>Zoom Client Secret</label>
+                            <input type="text" id="zoom-client-secret" placeholder="Your Zoom Client Secret">
+                        </div>
+                        <div class="form-group">
+                            <label>Zoom User Email (the host whose recordings to pull)</label>
+                            <input type="email" id="zoom-user-email" placeholder="host@company.com">
+                        </div>
+                    </div>
                     <span class="help-toggle" onclick="toggleHelp('source-help')">How do I get this?</span>
                     <div class="help-content" id="source-help">
                         <div id="help-fireflies" style="display:none;">
@@ -90,11 +109,12 @@
                             <ol>
                                 <li>Go to <strong>marketplace.zoom.us</strong> and sign in</li>
                                 <li>Click <strong>Develop > Build App</strong></li>
-                                <li>Choose <strong>Webhook Only</strong> app type</li>
+                                <li>Choose <strong>Server-to-Server OAuth</strong> app type</li>
                                 <li>Name it "Fairplay" and create it</li>
-                                <li>Under <strong>Feature</strong>, add the event: <code>recording.transcript_completed</code></li>
+                                <li>Under <strong>Scopes</strong>, add: <code>cloud_recording:read:list_user_recordings</code> and <code>cloud_recording:read:recording</code></li>
+                                <li>Under <strong>Feature > Event Subscriptions</strong>, add: <code>recording.transcript_completed</code></li>
                                 <li>You'll set the webhook URL after this setup completes</li>
-                                <li>Copy the <strong>Secret Token</strong> from the app page and paste it above</li>
+                                <li>Copy the <strong>Account ID</strong>, <strong>Client ID</strong>, and <strong>Client Secret</strong> from the app page</li>
                             </ol>
                         </div>
                         <div id="help-gong" style="display:none;">
@@ -268,10 +288,12 @@
                     keyLabel.textContent = 'Fireflies API Key';
                     keyHint.textContent = 'Found in Fireflies Settings > Developer Settings.';
                     document.getElementById('help-fireflies').style.display = 'block';
+                    document.getElementById('zoom-oauth-fields').style.display = 'none';
                 } else if (config.source === 'zoom') {
                     keyLabel.textContent = 'Zoom Webhook Secret Token';
-                    keyHint.textContent = 'From your Zoom Marketplace Webhook Only app.';
+                    keyHint.textContent = 'From your Zoom Server-to-Server OAuth app.';
                     document.getElementById('help-zoom').style.display = 'block';
+                    document.getElementById('zoom-oauth-fields').style.display = 'block';
                 } else if (config.source === 'gong') {
                     keyLabel.textContent = 'Gong API Access Key';
                     keyHint.textContent = 'Found in Gong Settings > API.';
@@ -347,7 +369,13 @@
                 };
 
                 if (config.source === 'gong') payload.gong_api_key = config.sourceKey;
-                if (config.source === 'zoom') payload.zoom_webhook_secret = config.sourceKey;
+                if (config.source === 'zoom') {
+                    payload.zoom_webhook_secret = config.sourceKey;
+                    payload.zoom_account_id = document.getElementById('zoom-account-id').value.trim();
+                    payload.zoom_client_id = document.getElementById('zoom-client-id').value.trim();
+                    payload.zoom_client_secret = document.getElementById('zoom-client-secret').value.trim();
+                    payload.zoom_user_email = document.getElementById('zoom-user-email').value.trim();
+                }
 
                 const result = await API.createConnection(payload);
 

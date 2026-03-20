@@ -178,6 +178,15 @@ def init_db():
                 ) THEN
                     ALTER TABLE connections ADD COLUMN shadow_mode BOOLEAN DEFAULT FALSE;
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'zoom_account_id'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN zoom_account_id TEXT DEFAULT '';
+                    ALTER TABLE connections ADD COLUMN zoom_client_id TEXT DEFAULT '';
+                    ALTER TABLE connections ADD COLUMN zoom_client_secret TEXT DEFAULT '';
+                    ALTER TABLE connections ADD COLUMN zoom_user_email TEXT DEFAULT '';
+                END IF;
             END $$;
         """)
         conn.commit()

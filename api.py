@@ -269,6 +269,10 @@ class ConnectionRequest(BaseModel):
     gong_api_secret: Optional[str] = Field("", description="Gong API secret (access key secret)")
     teams_access_token: Optional[str] = Field("", description="Microsoft Graph API access token")
     google_access_token: Optional[str] = Field("", description="Google OAuth access token")
+    zoom_account_id: Optional[str] = Field("", description="Zoom Server-to-Server OAuth Account ID")
+    zoom_client_id: Optional[str] = Field("", description="Zoom Server-to-Server OAuth Client ID")
+    zoom_client_secret: Optional[str] = Field("", description="Zoom Server-to-Server OAuth Client Secret")
+    zoom_user_email: Optional[str] = Field("", description="Zoom user email for recording access")
     shadow_mode: bool = Field(False, description="Shadow mode: score calls without writing to CRM")
 
 
@@ -340,6 +344,15 @@ def create_connection(req: ConnectionRequest, request: Request):
         google_access_token=req.google_access_token or "",
         shadow_mode=req.shadow_mode,
     )
+    # Store Zoom OAuth fields if provided (not in create_connection params, update after)
+    if req.zoom_account_id and conn.get("webhook_id"):
+        zoom_updates = {
+            "zoom_account_id": req.zoom_account_id or "",
+            "zoom_client_id": req.zoom_client_id or "",
+            "zoom_client_secret": req.zoom_client_secret or "",
+            "zoom_user_email": req.zoom_user_email or "",
+        }
+        connections.update_connection(conn["webhook_id"], zoom_updates)
 
     # Link connection to user if logged in via session
     if user and database.is_available():
@@ -1671,16 +1684,43 @@ def _run_calibration(req_data: dict, conn_dict: dict):
             req_lib.post(slack_url, json={"text": ":warning: *Fairplay Calibration:* No closed deals found in the last {days_back} days."}, timeout=10)
         return
 
-    # 2. Pull transcripts from Fireflies
+    # 2. Pull transcripts from available source
     since = datetime.now() - __import__("datetime").timedelta(days=days_back)
     transcripts = []
-    if ff_key:
+    transcript_source = conn_dict.get("transcript_source", "fireflies")
+
+    if transcript_source == "zoom" and conn_dict.get("zoom_account_id"):
+        # Pull from Zoom cloud recordings
+        import zoom_client
+        zoom_recordings = zoom_client.list_recordings(
+            user_email=conn_dict.get("zoom_user_email", "me"),
+            since=since,
+            account_id=conn_dict.get("zoom_account_id", ""),
+            client_id=conn_dict.get("zoom_client_id", ""),
+            client_secret=conn_dict.get("zoom_client_secret", ""),
+        )
+        # Convert to common format
+        for rec in zoom_recordings:
+            if rec.get("has_transcript"):
+                transcripts.append({
+                    "id": rec["id"],
+                    "title": rec["title"],
+                    "date": rec["date"],
+                    "participants": rec.get("participants", []),
+                    "_source": "zoom",
+                    "_transcript_url": rec["transcript_url"],
+                })
+    elif ff_key:
+        # Pull from Fireflies
         try:
-            transcripts = fireflies_client.list_transcripts(since=since, limit=100, api_key=ff_key)
+            ff_transcripts = fireflies_client.list_transcripts(since=since, limit=100, api_key=ff_key)
+            for t in ff_transcripts:
+                t["_source"] = "fireflies"
+            transcripts = ff_transcripts
         except Exception as e:
             logger.error(f"[Calibration] Failed to list transcripts: {e}")
 
-    logger.info(f"[Calibration] Found {len(transcripts)} transcripts in last {days_back} days")
+    logger.info(f"[Calibration] Found {len(transcripts)} transcripts in last {days_back} days (source: {transcript_source})")
 
     # 3. Match and score
     results = []
@@ -1695,12 +1735,28 @@ def _run_calibration(req_data: dict, conn_dict: dict):
         matched += 1
         tid = match.get("id")
         try:
-            transcript = fireflies_client.get_transcript(tid, api_key=ff_key)
-            if not transcript:
-                results.append({"deal": deal, "matched": True, "transcript_id": tid, "score": None, "error": "transcript not ready"})
-                continue
-            text = fireflies_client.format_transcript_text(transcript)
-            metadata = fireflies_client.get_meeting_metadata(transcript)
+            # Get transcript text based on source
+            if match.get("_source") == "zoom":
+                import zoom_client
+                text = zoom_client.download_transcript(
+                    match["_transcript_url"],
+                    account_id=conn_dict.get("zoom_account_id", ""),
+                    client_id=conn_dict.get("zoom_client_id", ""),
+                    client_secret=conn_dict.get("zoom_client_secret", ""),
+                )
+                metadata = {
+                    "title": match.get("title", "Zoom Meeting"),
+                    "date": match.get("date", ""),
+                    "source": "zoom",
+                    "participants": match.get("participants", []),
+                }
+            else:
+                transcript = fireflies_client.get_transcript(tid, api_key=ff_key)
+                if not transcript:
+                    results.append({"deal": deal, "matched": True, "transcript_id": tid, "score": None, "error": "transcript not ready"})
+                    continue
+                text = fireflies_client.format_transcript_text(transcript)
+                metadata = fireflies_client.get_meeting_metadata(transcript)
 
             analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
             score_result = deal_scorer.score_deal(analysis)

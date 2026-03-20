@@ -24,7 +24,8 @@ CONNECTIONS_FILE = Path(__file__).parent / ".connections.json"
 _CONN_FIELDS = [
     "name", "transcript_source", "fireflies_api_key", "crm", "crm_api_key",
     "framework", "auto_create_threshold", "notify_slack", "slack_webhook_url",
-    "zoom_webhook_secret", "gong_api_key", "gong_api_secret",
+    "zoom_webhook_secret", "zoom_account_id", "zoom_client_id", "zoom_client_secret",
+    "zoom_user_email", "gong_api_key", "gong_api_secret",
     "teams_access_token", "google_access_token", "active", "shadow_mode",
 ]
 
