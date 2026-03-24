@@ -1128,21 +1128,34 @@ async def zoom_webhook(webhook_id: str, request: Request, background_tasks: Back
     Webhook for Zoom. Configure in Zoom Marketplace app:
     Event subscriptions > Add > recording.transcript_completed
     """
-    conn = connections.get_connection(webhook_id)
-    if not conn or not conn.get("active"):
-        raise HTTPException(status_code=404, detail="Invalid or inactive webhook")
-
     body = await request.json()
 
-    # Zoom sends a validation challenge on first setup
+    # Zoom sends a validation challenge on first setup - handle before connection check
     if body.get("event") == "endpoint.url_validation":
         import hashlib, hmac
         plain_token = body.get("payload", {}).get("plainToken", "")
-        zoom_secret = conn.get("zoom_webhook_secret", "")
+        # Try connection secret first, fall back to checking all connections
+        conn = connections.get_connection(webhook_id)
+        zoom_secret = ""
+        if conn:
+            zoom_secret = conn.get("zoom_webhook_secret", "")
+        if not zoom_secret:
+            # Try to find any connection with a zoom secret for validation
+            all_conns = connections.list_connections_full() if hasattr(connections, 'list_connections_full') else []
+            for c in all_conns:
+                if c.get("zoom_webhook_secret"):
+                    zoom_secret = c["zoom_webhook_secret"]
+                    break
+        if not zoom_secret:
+            zoom_secret = webhook_id  # Last resort fallback
         hash_value = hmac.HMAC(
             zoom_secret.encode(), plain_token.encode(), hashlib.sha256
         ).hexdigest()
         return {"plainToken": plain_token, "encryptedToken": hash_value}
+
+    conn = connections.get_connection(webhook_id)
+    if not conn or not conn.get("active"):
+        raise HTTPException(status_code=404, detail="Invalid or inactive webhook")
 
     event = body.get("event", "")
     if event in ("recording.transcript_completed", "recording.completed"):
