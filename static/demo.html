@@ -177,6 +177,9 @@ Sarah (Prospect): We've been struggling with pipeline accuracy. Our forecast is 
                     }),
                 });
 
+                if (res.status === 429) {
+                    throw new Error('You\'ve reached the demo limit (5 scores per hour). Sign up for unlimited access at niclfairplay.lovable.app');
+                }
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
                     throw new Error(err.detail || 'Scoring failed');

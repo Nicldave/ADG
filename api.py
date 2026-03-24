@@ -135,13 +135,47 @@ def list_frameworks():
     return result
 
 
+# Rate limiter for /analyze (prevents abuse of demo page)
+_rate_limit_store = {}  # {ip: [timestamp, timestamp, ...]}
+RATE_LIMIT_MAX = 5  # max requests per window
+RATE_LIMIT_WINDOW = 3600  # 1 hour in seconds
+
+
+def _check_rate_limit(request: Request):
+    """Check if the request IP has exceeded the rate limit. Skips for authenticated users."""
+    # Skip rate limit for authenticated users (cookie or token)
+    user = _get_user_from_session(request)
+    if user:
+        return
+    # Skip if API key auth is valid
+    api_key = request.headers.get("x-api-key", "")
+    dealsmart_key = os.getenv("DEALSMART_API_KEY", "")
+    if dealsmart_key and api_key == dealsmart_key:
+        return
+
+    ip = request.client.host if request.client else "unknown"
+    now = datetime.now().timestamp()
+    # Clean old entries
+    if ip in _rate_limit_store:
+        _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if now - t < RATE_LIMIT_WINDOW]
+    else:
+        _rate_limit_store[ip] = []
+
+    if len(_rate_limit_store[ip]) >= RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Maximum 5 scores per hour. Sign up for unlimited access.")
+
+    _rate_limit_store[ip].append(now)
+
+
 @app.post("/analyze", response_model=AnalyzeResponse, dependencies=[Depends(require_api_key)])
-def analyze(req: AnalyzeRequest):
+def analyze(req: AnalyzeRequest, request: Request):
     """
     Analyze a sales transcript. Returns structured analysis + Strike Zone score.
     Auto-creates deal in Attio (if score >= 50) and sends Slack notification
     using server default API keys.
     """
+    _check_rate_limit(request)
+
     if req.framework not in FRAMEWORK_NAMES:
         raise HTTPException(
             status_code=400,
