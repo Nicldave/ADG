@@ -138,7 +138,7 @@ def list_frameworks():
 # Rate limiter for /analyze (prevents abuse of demo page)
 _rate_limit_store = {}  # {ip: [timestamp, timestamp, ...]}
 RATE_LIMIT_MAX = 5  # max requests per window
-RATE_LIMIT_WINDOW = 3600  # 1 hour in seconds
+RATE_LIMIT_WINDOW = 86400  # 24 hours in seconds
 
 
 def _check_rate_limit(request: Request):
@@ -162,7 +162,7 @@ def _check_rate_limit(request: Request):
         _rate_limit_store[ip] = []
 
     if len(_rate_limit_store[ip]) >= RATE_LIMIT_MAX:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Maximum 5 scores per hour. Sign up for unlimited access.")
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Maximum 5 scores per day. Sign up for unlimited access.")
 
     _rate_limit_store[ip].append(now)
 
