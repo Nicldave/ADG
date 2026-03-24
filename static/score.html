@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Score Transcript - Fairplay</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <style>
+        .score-textarea {
+            width: 100%;
+            min-height: 300px;
+            padding: 14px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 13px;
+            font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+            line-height: 1.6;
+            resize: vertical;
+            outline: none;
+        }
+        .score-textarea:focus { border-color: #0a0a0a; }
+        .result-score { font-size: 48px; font-weight: 800; }
+        .breakdown-bar { height: 6px; border-radius: 3px; background: #eee; margin-top: 6px; }
+        .breakdown-fill { height: 100%; border-radius: 3px; }
+        .breakdown-item { margin-bottom: 12px; }
+        .breakdown-label { display: flex; justify-content: space-between; font-size: 13px; }
+        .deal-banner { padding: 12px 16px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; color: #059669; font-weight: 500; font-size: 14px; margin-bottom: 16px; }
+    </style>
+</head>
+<body>
+    <div class="app-layout">
+        <nav id="app-nav"></nav>
+        <main class="app-content">
+            <div class="page-header">
+                <h1>Score Transcript</h1>
+                <p>Paste a call transcript to score it manually</p>
+            </div>
+
+            <div class="card">
+                <div style="display: flex; gap: 16px; margin-bottom: 16px;">
+                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                        <label>Framework</label>
+                        <select id="framework">
+                            <option value="bant">BANT</option>
+                            <option value="meddic">MEDDIC</option>
+                            <option value="spiced">SPICED</option>
+                            <option value="spin">SPIN</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex: 2; margin-bottom: 0;">
+                        <label>Meeting Title (optional)</label>
+                        <input type="text" id="meeting-title" placeholder="e.g. Discovery Call with Acme Corp">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Transcript</label>
+                    <textarea class="score-textarea" id="transcript" placeholder="Paste your call transcript here..."></textarea>
+                </div>
+                <button class="btn btn-primary" id="score-btn" onclick="scoreTranscript()">Score This Call</button>
+            </div>
+
+            <div class="card" id="result-card" style="display: none;">
+                <div id="deal-banner" class="deal-banner" style="display: none;"></div>
+                <div style="display: flex; align-items: center; gap: 24px; margin-bottom: 24px;">
+                    <div>
+                        <span class="result-score" id="result-score"></span>
+                        <span style="font-size: 20px; color: #888;">/100</span>
+                    </div>
+                    <div>
+                        <div id="result-badge" style="margin-bottom: 6px;"></div>
+                        <div id="result-framework" style="font-size: 13px; color: #888;"></div>
+                    </div>
+                </div>
+                <div style="margin-bottom: 20px;">
+                    <div style="font-size: 13px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;">Key Insight</div>
+                    <div id="result-insight" style="font-style: italic; color: #555;"></div>
+                </div>
+                <div style="margin-bottom: 20px;">
+                    <div style="font-size: 13px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px;">Breakdown</div>
+                    <div id="result-breakdown"></div>
+                </div>
+                <div>
+                    <div style="font-size: 13px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;">Deal Name</div>
+                    <div id="result-dealname" style="font-weight: 600;"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/app.js"></script>
+    <script>
+        async function scoreTranscript() {
+            const transcript = document.getElementById('transcript').value.trim();
+            if (!transcript) { alert('Paste a transcript first'); return; }
+            if (transcript.length < 500) { alert('Transcript is too short (minimum ~100 words)'); return; }
+
+            const btn = document.getElementById('score-btn');
+            btn.textContent = 'Scoring...';
+            btn.disabled = true;
+            document.getElementById('result-card').style.display = 'none';
+
+            try {
+                const result = await API.post('/analyze', {
+                    transcript: transcript,
+                    framework: document.getElementById('framework').value,
+                    meeting_title: document.getElementById('meeting-title').value.trim() || 'Manual Transcript',
+                });
+
+                if (!result) return;
+
+                // Score
+                const scoreEl = document.getElementById('result-score');
+                scoreEl.textContent = result.score;
+                scoreEl.style.color = scoreColor(result.score);
+
+                // Badge
+                document.getElementById('result-badge').innerHTML = recBadge(result.recommendation);
+
+                // Framework
+                document.getElementById('result-framework').textContent = (result.framework || 'custom').toUpperCase();
+
+                // Insight
+                document.getElementById('result-insight').textContent = result.key_insight || 'N/A';
+
+                // Deal name
+                document.getElementById('result-dealname').textContent = result.deal_name || 'N/A';
+
+                // Breakdown
+                const breakdown = result.score_result?.breakdown || {};
+                let breakdownHtml = '';
+                for (const [key, val] of Object.entries(breakdown)) {
+                    const label = val.label || key;
+                    const pct = (val.score / val.max) * 100;
+                    const color = pct >= 70 ? '#22c55e' : pct >= 50 ? '#f59e0b' : '#ef4444';
+                    breakdownHtml += `
+                        <div class="breakdown-item">
+                            <div class="breakdown-label">
+                                <span>${label}</span>
+                                <span style="font-weight: 600;">${val.score}/${val.max}</span>
+                            </div>
+                            <div class="breakdown-bar">
+                                <div class="breakdown-fill" style="width: ${pct}%; background: ${color};"></div>
+                            </div>
+                        </div>
+                    `;
+                }
+                document.getElementById('result-breakdown').innerHTML = breakdownHtml;
+
+                // Deal banner
+                const banner = document.getElementById('deal-banner');
+                if (result.score >= 70) {
+                    banner.style.display = 'block';
+                    banner.textContent = 'Deal created in CRM';
+                } else if (result.score >= 50) {
+                    banner.style.display = 'block';
+                    banner.style.background = '#fffbeb';
+                    banner.style.borderColor = '#fde68a';
+                    banner.style.color = '#92400e';
+                    banner.textContent = 'Routed to Needs Review';
+                } else {
+                    banner.style.display = 'none';
+                }
+
+                document.getElementById('result-card').style.display = 'block';
+            } catch (e) {
+                alert('Scoring failed: ' + e.message);
+            } finally {
+                btn.textContent = 'Score This Call';
+                btn.disabled = false;
+            }
+        }
+
+        initApp();
+    </script>
+</body>
+</html>
