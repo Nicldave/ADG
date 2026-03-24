@@ -1776,54 +1776,101 @@ def _run_calibration(req_data: dict, conn_dict: dict):
 
     logger.info(f"[Calibration] Found {len(transcripts)} transcripts in last {days_back} days (source: {transcript_source})")
 
-    # 3. Match and score
-    results = []
-    matched = 0
-    for deal in all_deals:
-        company = deal.get("company_name", "")
-        match = _match_transcript_to_deal(company, transcripts)
-        if not match:
-            results.append({"deal": deal, "matched": False, "score": None})
-            continue
-
-        matched += 1
-        tid = match.get("id")
+    # 3. Score ALL transcripts first, then match to deals by extracted company name
+    scored_transcripts = []
+    for t in transcripts:
+        tid = t.get("id")
         try:
-            # Get transcript text based on source
-            if match.get("_source") == "zoom":
+            if t.get("_source") == "zoom":
                 import zoom_client
                 text = zoom_client.download_transcript(
-                    match["_transcript_url"],
+                    t["_transcript_url"],
                     account_id=conn_dict.get("zoom_account_id", ""),
                     client_id=conn_dict.get("zoom_client_id", ""),
                     client_secret=conn_dict.get("zoom_client_secret", ""),
                 )
                 metadata = {
-                    "title": match.get("title", "Zoom Meeting"),
-                    "date": match.get("date", ""),
+                    "title": t.get("title", "Zoom Meeting"),
+                    "date": t.get("date", ""),
                     "source": "zoom",
-                    "participants": match.get("participants", []),
+                    "participants": t.get("participants", []),
                 }
             else:
                 transcript = fireflies_client.get_transcript(tid, api_key=ff_key)
                 if not transcript:
-                    results.append({"deal": deal, "matched": True, "transcript_id": tid, "score": None, "error": "transcript not ready"})
                     continue
                 text = fireflies_client.format_transcript_text(transcript)
                 metadata = fireflies_client.get_meeting_metadata(transcript)
 
-            analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
-            score_result = deal_scorer.score_deal(analysis)
+            if not text or len(text) < 500:
+                continue
 
-            results.append({
-                "deal": deal,
-                "matched": True,
+            analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
+            if not analysis or not isinstance(analysis, dict):
+                continue
+            if not analysis.get("is_sales_conversation"):
+                logger.info(f"[Calibration] {t.get('title', tid)} is not a sales conversation, skipping")
+                continue
+
+            score_result = deal_scorer.score_deal(analysis)
+            company_from_analysis = analysis.get("prospect_company", {}).get("name", "")
+            participants = [p.get("name", "") for p in analysis.get("participants", []) if p.get("is_prospect")]
+
+            scored_transcripts.append({
                 "transcript_id": tid,
+                "title": t.get("title", ""),
+                "date": t.get("date", ""),
+                "company": company_from_analysis,
+                "participants": participants,
                 "score": score_result["total_score"],
                 "recommendation": score_result["recommendation"],
                 "breakdown": score_result.get("breakdown", {}),
+                "key_insight": score_result.get("key_insight", ""),
             })
+            logger.info(f"[Calibration] Scored: {t.get('title', tid)} -> company: {company_from_analysis}, score: {score_result['total_score']}")
+            _time.sleep(2)
+        except Exception as e:
+            logger.warning(f"[Calibration] Failed to score transcript {tid}: {e}")
 
+    logger.info(f"[Calibration] Scored {len(scored_transcripts)} sales transcripts")
+
+    # 4. Match scored transcripts to deals by company name from analysis
+    results = []
+    matched = 0
+    for deal in all_deals:
+        deal_company = _normalize_company(deal.get("company_name", ""))
+        deal_name_norm = _normalize_company(deal.get("name", ""))
+        best_match = None
+
+        for st in scored_transcripts:
+            transcript_company = _normalize_company(st.get("company", ""))
+            if not transcript_company:
+                continue
+            # Match if company names overlap
+            if (transcript_company and deal_company and
+                (transcript_company in deal_company or deal_company in transcript_company or
+                 transcript_company in deal_name_norm or deal_name_norm in transcript_company)):
+                best_match = st
+                break
+            # Also check participant names against deal name
+            for p in st.get("participants", []):
+                p_norm = _normalize_company(p)
+                if p_norm and (p_norm in deal_name_norm or deal_name_norm in p_norm):
+                    best_match = st
+                    break
+            if best_match:
+                break
+
+        if best_match:
+            matched += 1
+            results.append({
+                "deal": deal,
+                "matched": True,
+                "transcript_id": best_match["transcript_id"],
+                "score": best_match["score"],
+                "recommendation": best_match["recommendation"],
+                "breakdown": best_match["breakdown"],
+            })
             # Save to calibration_results table
             if database.is_available():
                 db = database.get_conn()
@@ -1835,9 +1882,9 @@ def _run_calibration(req_data: dict, conn_dict: dict):
                                (deal_id, deal_name, company_name, crm_stage, transcript_id,
                                 fairplay_score, framework, recommendation, breakdown)
                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                            (deal["deal_id"], deal["name"], company, deal["stage"], tid,
-                             score_result["total_score"], framework, score_result["recommendation"],
-                             json.dumps(score_result.get("breakdown", {}))),
+                            (deal["deal_id"], deal["name"], best_match["company"], deal["stage"],
+                             best_match["transcript_id"], best_match["score"], framework,
+                             best_match["recommendation"], json.dumps(best_match["breakdown"])),
                         )
                         db.commit()
                         cur.close()
@@ -1845,11 +1892,8 @@ def _run_calibration(req_data: dict, conn_dict: dict):
                         db.rollback()
                     finally:
                         database.put_conn(db)
-
-            _time.sleep(2)  # Rate limit
-        except Exception as e:
-            logger.warning(f"[Calibration] Failed to score transcript {tid}: {e}")
-            results.append({"deal": deal, "matched": True, "transcript_id": tid, "score": None, "error": str(e)})
+        else:
+            results.append({"deal": deal, "matched": False, "score": None})
 
     # 4. Generate report
     scored_won = [r for r in results if r["deal"]["stage"] in won_stages and r.get("score") is not None]
