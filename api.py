@@ -584,12 +584,16 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         text = fireflies_client.format_transcript_text(transcript)
         metadata = fireflies_client.get_meeting_metadata(transcript) if transcript else {}
 
-        if not text or len(text) < 50:
+        if not text or len(text) < 500:
             logger.info(f"Transcript {transcript_id} too short ({len(text) if text else 0} chars), will retry next cycle")
             return  # Don't mark as processed, let next poll retry
 
         # 2. Analyze with Claude
         analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
+
+        if not analysis or not isinstance(analysis, dict):
+            logger.warning(f"Transcript {transcript_id} analysis returned invalid result, skipping")
+            return
 
         if not analysis.get("is_sales_conversation"):
             logger.info(f"Transcript {transcript_id} is not a sales conversation, skipping deal creation")
@@ -1004,7 +1008,7 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
         crm_name = conn["crm"]
         framework = conn.get("framework", "custom")
 
-        if not text or len(text) < 50:
+        if not text or len(text) < 500:
             logger.warning(f"[{conn['name']}] Transcript too short ({len(text)} chars), skipping")
             return
 
