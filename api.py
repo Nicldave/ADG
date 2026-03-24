@@ -1939,6 +1939,19 @@ def _run_calibration(req_data: dict, conn_dict: dict):
             for r in top_lost:
                 report_text += f"  {r['deal']['name']}: {r['score']}/100\n"
 
+        # Show unmatched scored transcripts and ask user to identify them
+        matched_tids = {r.get("transcript_id") for r in results if r.get("matched")}
+        unmatched_scored = [st for st in scored_transcripts if st["transcript_id"] not in matched_tids]
+        if unmatched_scored:
+            report_text += f"\n:question: *{len(unmatched_scored)} scored call(s) could not be matched to a deal:*\n"
+            report_text += "_Reply with the deal name for any of these so we can link them for calibration._\n\n"
+            for st in unmatched_scored:
+                emoji = ":large_green_circle:" if st["score"] >= 70 else ":large_yellow_circle:" if st["score"] >= 50 else ":red_circle:"
+                report_text += (
+                    f"{emoji} *{st.get('company') or st.get('title', '?')}* ({st.get('date', '?')[:10]})\n"
+                    f"    Score: {st['score']}/100 | _{st.get('key_insight', '')}_\n"
+                )
+
         try:
             req_lib.post(slack_url, json={"text": report_text}, timeout=10)
         except Exception as e:
