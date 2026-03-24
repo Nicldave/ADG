@@ -166,8 +166,10 @@ Sarah (Prospect): We've been struggling with pipeline accuracy. Our forecast is 
         async function scoreIt() {
             const transcript = document.getElementById('transcript').value.trim();
             const email = document.getElementById('demo-email').value.trim();
-            if (!email || !email.includes('@') || email.includes('gmail') || email.includes('yahoo') || email.includes('hotmail')) {
-                alert('Please enter a valid work email address.'); return;
+            const blocked = ['gmail.com','yahoo.com','hotmail.com','outlook.com','icloud.com','aol.com','protonmail.com','proton.me','mail.com','zoho.com','yandex.com','gmx.com','fastmail.com','tutanota.com','live.com','msn.com','me.com','mac.com','inbox.com','mail.ru','qq.com','163.com','yeah.net'];
+            const domain = (email.split('@')[1] || '').toLowerCase();
+            if (!email || !domain || blocked.includes(domain)) {
+                alert('Please enter a valid work email address. Personal email addresses are not accepted.'); return;
             }
             if (!transcript) { alert('Paste a transcript first'); return; }
             if (transcript.length < 200) { alert('Transcript is too short. Paste a full conversation.'); return; }
