@@ -101,6 +101,12 @@ John (Sales): Thanks for jumping on today. Tell me a bit about what's driving th
 Sarah (Prospect): We've been struggling with pipeline accuracy. Our forecast is off by 30% every quarter..."></textarea>
             </div>
 
+            <div class="form-group">
+                <label>Your Work Email</label>
+                <input type="email" id="demo-email" placeholder="you@company.com" required>
+                <div class="hint">Required to score. We'll follow up with your results.</div>
+            </div>
+
             <button class="btn btn-primary" id="score-btn" onclick="scoreIt()" style="width: 100%; justify-content: center; padding: 14px;">
                 Score This Conversation
             </button>
@@ -159,12 +165,24 @@ Sarah (Prospect): We've been struggling with pipeline accuracy. Our forecast is 
 
         async function scoreIt() {
             const transcript = document.getElementById('transcript').value.trim();
+            const email = document.getElementById('demo-email').value.trim();
+            if (!email || !email.includes('@') || email.includes('gmail') || email.includes('yahoo') || email.includes('hotmail')) {
+                alert('Please enter a valid work email address.'); return;
+            }
             if (!transcript) { alert('Paste a transcript first'); return; }
             if (transcript.length < 200) { alert('Transcript is too short. Paste a full conversation.'); return; }
 
             const btn = document.getElementById('score-btn');
             btn.textContent = 'Scoring... (this takes 15-30 seconds)';
             btn.disabled = true;
+
+            // Send lead info to Slack (Kevin's request access webhook)
+            try {
+                fetch(atob('aHR0cHM6Ly9ob29rcy5zbGFjay5jb20vc2VydmljZXMvVDBBNldKVlVRQUYvQjBBTlNNN0swUkYva0hjZm9aU0E2YVM3enljQmpTSzVUM3VW'), {
+                    method: 'POST',
+                    body: JSON.stringify({text: `:test_tube: *Fairplay Demo Used*\nEmail: ${email}\nFramework: ${document.getElementById('framework').value}\nTitle: ${document.getElementById('meeting-title').value || 'N/A'}\nTranscript length: ${transcript.length} chars`}),
+                });
+            } catch(e) {}
 
             try {
                 const res = await fetch(API_BASE + '/analyze', {
@@ -174,6 +192,7 @@ Sarah (Prospect): We've been struggling with pipeline accuracy. Our forecast is 
                         transcript: transcript,
                         framework: document.getElementById('framework').value,
                         meeting_title: document.getElementById('meeting-title').value.trim() || 'Demo Transcript',
+                        demo_mode: true,
                     }),
                 });
 

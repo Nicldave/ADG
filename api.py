@@ -81,6 +81,7 @@ class AnalyzeRequest(BaseModel):
     framework: str = Field("custom", description="Scoring framework: custom, bant, spiced, meddic, spin")
     meeting_title: Optional[str] = None
     meeting_date: Optional[str] = None
+    demo_mode: bool = Field(False, description="If true, score only. No deal creation, no Slack notification.")
 
 
 class CreateDealRequest(BaseModel):
@@ -197,40 +198,42 @@ def analyze(req: AnalyzeRequest, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-    # Check for existing deal and previous scores
-    company_name = analysis.get("prospect_company", {}).get("name", "")
-    existing_deal = _find_existing_deal(company_name, "attio") if company_name else None
-    previous_scores = _get_previous_scores(company_name) if company_name else []
-
-    # Auto-create deal if it's a sales conversation with sufficient score (and no existing deal)
-    deal_result = None
+    # In demo mode, skip deal creation, logging, and Slack notification
     deal_id = None
-    if existing_deal:
-        deal_id = existing_deal.get("deal_id")
-        logger.info(f"Existing deal found for '{company_name}', skipping creation")
-    elif analysis.get("is_sales_conversation") and score_result["total_score"] >= REVIEW_THRESHOLD:
-        try:
-            crm_client = crm_factory.get_client("attio")
-            deal_result = crm_client.create_deal(score_result, analysis, metadata, dry_run=False)
-            if deal_result:
-                deal_id = deal_result.get("deal_id")
-                logger.info(f"Auto-created Attio deal: {deal_result.get('deal_name')} (score: {score_result['total_score']})")
-        except Exception as e:
-            logger.warning(f"Auto deal creation failed: {e}")
+    if not req.demo_mode:
+        # Check for existing deal and previous scores
+        company_name = analysis.get("prospect_company", {}).get("name", "")
+        existing_deal = _find_existing_deal(company_name, "attio") if company_name else None
+        previous_scores = _get_previous_scores(company_name) if company_name else []
 
-    # Log scored deal
-    _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
+        # Auto-create deal if it's a sales conversation with sufficient score (and no existing deal)
+        deal_result = None
+        if existing_deal:
+            deal_id = existing_deal.get("deal_id")
+            logger.info(f"Existing deal found for '{company_name}', skipping creation")
+        elif analysis.get("is_sales_conversation") and score_result["total_score"] >= REVIEW_THRESHOLD:
+            try:
+                crm_client = crm_factory.get_client("attio")
+                deal_result = crm_client.create_deal(score_result, analysis, metadata, dry_run=False)
+                if deal_result:
+                    deal_id = deal_result.get("deal_id")
+                    logger.info(f"Auto-created Attio deal: {deal_result.get('deal_name')} (score: {score_result['total_score']})")
+            except Exception as e:
+                logger.warning(f"Auto deal creation failed: {e}")
 
-    # Slack notification
-    from config import SLACK_WEBHOOK_URL
-    if SLACK_WEBHOOK_URL:
-        try:
-            _send_slack_notification(
-                SLACK_WEBHOOK_URL, score_result, analysis, metadata,
-                deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
-            )
-        except Exception as e:
-            logger.warning(f"Slack notification failed: {e}")
+        # Log scored deal
+        _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
+
+        # Slack notification
+        from config import SLACK_WEBHOOK_URL
+        if SLACK_WEBHOOK_URL:
+            try:
+                _send_slack_notification(
+                    SLACK_WEBHOOK_URL, score_result, analysis, metadata,
+                    deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
+                )
+            except Exception as e:
+                logger.warning(f"Slack notification failed: {e}")
 
     return AnalyzeResponse(
         analysis=analysis,
