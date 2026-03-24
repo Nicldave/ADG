@@ -938,6 +938,105 @@ async def slack_score_call(request: Request, background_tasks: BackgroundTasks):
     }
 
 
+# ── Slack Events (bot replies for calibration matching) ──────────────────────
+
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+
+
+@app.post("/slack/events")
+async def slack_events(request: Request):
+    """Handle Slack Events API including URL verification challenge."""
+    body = await request.json()
+
+    # URL verification challenge
+    if body.get("type") == "url_verification":
+        return {"challenge": body.get("challenge", "")}
+
+    # Event callback
+    if body.get("type") == "event_callback":
+        event = body.get("event", {})
+        # Only process channel messages (not bot messages)
+        if event.get("type") == "message" and not event.get("bot_id") and not event.get("subtype"):
+            text = event.get("text", "").strip()
+            thread_ts = event.get("thread_ts", "")
+            channel = event.get("channel", "")
+
+            # Only process threaded replies (replies to calibration prompts)
+            if thread_ts and text:
+                _handle_calibration_reply(text, channel, thread_ts)
+
+    return {"ok": True}
+
+
+def _handle_calibration_reply(reply_text: str, channel: str, thread_ts: str):
+    """Process a Slack reply that might be linking a transcript to a deal."""
+    if not database.is_available():
+        return
+
+    # Look for unmatched calibration results (no deal linked)
+    # The reply should contain a deal name or company name
+    # Try to find matching deal in calibration_results where deal_id is empty or null
+    conn = database.get_conn()
+    if not conn:
+        return
+
+    try:
+        cur = conn.cursor()
+        # Find recent unmatched scored transcripts
+        cur.execute("""
+            SELECT id, company_name, fairplay_score, transcript_id
+            FROM calibration_results
+            WHERE deal_id IS NULL OR deal_id = ''
+            ORDER BY created_at DESC LIMIT 20
+        """)
+        unmatched = cur.fetchall()
+
+        if not unmatched:
+            cur.close()
+            return
+
+        # Try to match the reply text to a deal name
+        reply_norm = _normalize_company(reply_text)
+        if not reply_norm:
+            cur.close()
+            return
+
+        # Update the first unmatched entry that the reply seems to reference
+        for row in unmatched:
+            cal_id, company, score, tid = row
+            company_norm = _normalize_company(company or "")
+            if company_norm and (company_norm in reply_norm or reply_norm in company_norm):
+                # Update this calibration entry with the deal info from the reply
+                cur.execute(
+                    "UPDATE calibration_results SET deal_name = %s, matched_by = 'slack_reply' WHERE id = %s",
+                    (reply_text.strip(), cal_id),
+                )
+                conn.commit()
+
+                # Post confirmation
+                if SLACK_BOT_TOKEN:
+                    import requests as req_lib
+                    req_lib.post(
+                        "https://slack.com/api/chat.postMessage",
+                        headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                        json={
+                            "channel": channel,
+                            "thread_ts": thread_ts,
+                            "text": f":white_check_mark: Linked *{company}* (score: {score}) to deal: *{reply_text.strip()}*",
+                        },
+                        timeout=10,
+                    )
+                logger.info(f"[Calibration] Slack reply linked {company} to deal: {reply_text.strip()}")
+                break
+
+        cur.close()
+    except Exception as e:
+        logger.warning(f"Calibration reply handling failed: {e}")
+        conn.rollback()
+    finally:
+        database.put_conn(conn)
+
+
 # ── File upload ───────────────────────────────────────────────────────────────
 
 def _parse_vtt(content: str) -> str:
