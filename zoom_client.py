@@ -45,6 +45,29 @@ def _get_access_token(account_id: str, client_id: str, client_secret: str) -> st
         return ""
 
 
+def list_users(
+    account_id: str = "",
+    client_id: str = "",
+    client_secret: str = "",
+) -> list:
+    """List all users on the Zoom account."""
+    token = _get_access_token(account_id, client_id, client_secret)
+    if not token:
+        return []
+    try:
+        resp = requests.get(
+            "https://api.zoom.us/v2/users",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"page_size": 300, "status": "active"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json().get("users", [])
+    except Exception as e:
+        logger.error(f"Zoom list_users failed: {e}")
+        return []
+
+
 def list_recordings(
     user_email: str,
     since: Optional[datetime] = None,

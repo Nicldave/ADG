@@ -63,7 +63,9 @@ Return ONLY valid JSON (no markdown, no commentary) matching this exact structur
     "name": "string or null",
     "industry": "string or null",
     "estimated_size": "string or null",
-    "estimated_revenue": "string or null"
+    "estimated_revenue": "string or null",
+    "domain": "company website domain if mentioned, or null",
+    "website": "full URL if mentioned, or null"
   },
   "pain_signals": [
     {"category": "one of the 10 categories above", "quote": "verbatim quote from transcript", "severity": 1-5, "speaker": "name"}
@@ -90,7 +92,7 @@ Return ONLY valid JSON (no markdown, no commentary) matching this exact structur
     "evidence": "verbatim quote or null"
   },
   "decision_makers": [
-    {"name": "string", "title": "string or null", "influence": "champion|evaluator|decision_maker|blocker|unknown"}
+    {"name": "string", "title": "string or null", "influence": "champion|evaluator|decision_maker|blocker|unknown", "email": "email address if mentioned, or null"}
   ],
   "competitors_mentioned": ["list of competitor names or services mentioned"],
   "summary": "2-3 sentence summary of the meeting and its sales significance"

@@ -238,10 +238,11 @@ def create_company(company_name: str, industry: Optional[str] = None, api_key: O
     return company_id
 
 
-def find_or_create_company(company_name: str, industry: Optional[str] = None, api_key: Optional[str] = None) -> str:
+def find_or_create_company(company_name: str, industry: Optional[str] = None, domain: Optional[str] = None, api_key: Optional[str] = None) -> str:
     """Find an existing company or create a new one. Returns company ID."""
     if not company_name:
         return None
+    # TODO: Use domain for HubSpot dedup (HubSpot natively dedupes on domain)
     existing = find_company(company_name, api_key=api_key)
     if existing:
         return existing
@@ -259,8 +260,13 @@ def find_contact_by_email(email: str) -> Optional[str]:
         return None
 
 
-def find_contact_by_name(name: str, company_name: Optional[str] = None, api_key: Optional[str] = None) -> Optional[str]:
-    """Search for a contact by name (and optionally company)."""
+def find_or_create_contact(name: str, email: Optional[str] = None, company_name: Optional[str] = None, api_key: Optional[str] = None) -> Optional[str]:
+    """Search for a contact by email or name (and optionally company)."""
+    # Email-first lookup for HubSpot
+    if email:
+        existing = find_contact_by_email(email)
+        if existing:
+            return existing
     filters = [{"propertyName": "firstname", "operator": "CONTAINS_TOKEN", "value": name.split()[0]}]
     if len(name.split()) > 1:
         filters.append({"propertyName": "lastname", "operator": "EQ", "value": name.split()[-1]})
@@ -283,6 +289,10 @@ def find_contact_by_name(name: str, company_name: Optional[str] = None, api_key:
     except Exception as e:
         logger.warning(f"Contact lookup failed for '{name}': {e}")
     return None
+
+
+# Backward-compatible alias
+find_contact_by_name = find_or_create_contact
 
 
 # --- Deal Creation ---

@@ -32,6 +32,37 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# Common suffixes stripped during company name normalization
+_COMPANY_SUFFIXES = re.compile(
+    r"\b(inc\.?|llc\.?|ltd\.?|corp\.?|co\.?|corporation|incorporated|limited|company|group|holdings|plc)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_company_name(name: str) -> str:
+    """Normalize a company name for comparison: lowercase, strip suffixes and punctuation."""
+    if not name:
+        return ""
+    normalized = name.strip().lower()
+    normalized = _COMPANY_SUFFIXES.sub("", normalized).strip()
+    normalized = re.sub(r"[^\w\s]", "", normalized)  # remove remaining punctuation
+    normalized = re.sub(r"\s+", " ", normalized).strip()  # collapse whitespace
+    return normalized
+
+
+def _extract_root_domain(domain: str) -> str:
+    """Extract root domain from a URL or domain string (e.g. 'https://www.acme.com/about' -> 'acme.com')."""
+    if not domain:
+        return ""
+    d = domain.strip().lower()
+    # Strip protocol
+    d = re.sub(r"^https?://", "", d)
+    # Strip path, query, fragment
+    d = d.split("/")[0].split("?")[0].split("#")[0]
+    # Strip www prefix
+    d = re.sub(r"^www\.", "", d)
+    return d
+
 
 # --- Internal helpers ---
 
@@ -68,34 +99,80 @@ def _get_owner_id(api_key: Optional[str] = None) -> Optional[str]:
 
 # --- Company Lookup/Creation ---
 
-def find_or_create_company(company_name: str, industry: Optional[str] = None, api_key: Optional[str] = None) -> Optional[str]:
+def find_or_create_company(
+    company_name: str,
+    industry: Optional[str] = None,
+    domain: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[str]:
     """
-    Find a company in Attio by name, or create one. Returns record ID.
+    Find or create a company in Attio. Returns record ID.
+
+    Dedup strategy (in order):
+      1. Domain assert (upsert) - if domain provided, uses Attio's native
+         matching_attribute=domains which guarantees uniqueness.
+      2. Normalized name search - strips suffixes (Inc, LLC, etc.), lowercases,
+         and searches. Validates match quality before accepting.
+      3. Create new - only if neither match finds an existing record.
     """
+    if not company_name and not domain:
+        return None
+
+    root_domain = _extract_root_domain(domain) if domain else ""
+
+    # --- Strategy 1: Domain-based assert (upsert) ---
+    if root_domain:
+        try:
+            values = {"domains": [{"domain": root_domain}]}
+            if company_name:
+                values["name"] = [{"value": company_name}]
+            data = _attio_request(
+                "PUT",
+                "/objects/companies/records",
+                {"data": {"values": values}},
+                params={"matching_attribute": "domains"},
+                api_key=api_key,
+            )
+            record_id = data["data"]["id"]["record_id"]
+            logger.info(f"Attio company assert (domain={root_domain}): {company_name} (ID: {record_id})")
+            return record_id
+        except Exception as e:
+            logger.warning(f"Attio company assert failed for domain '{root_domain}': {e}")
+            # Fall through to name-based search
+
     if not company_name:
         return None
 
-    # Search first
+    # --- Strategy 2: Normalized name search ---
+    needle = _normalize_company_name(company_name)
     try:
         payload = {
             "filter": {"name": {"$contains": company_name}},
-            "limit": 1,
+            "limit": 5,
         }
         data = _attio_request("POST", "/objects/companies/records/query", payload, api_key=api_key)
         results = data.get("data", [])
-        if results:
-            record_id = results[0]["id"]["record_id"]
-            logger.info(f"Attio company found: {company_name} (ID: {record_id})")
-            return record_id
+        for result in results:
+            result_name = ""
+            name_vals = result.get("values", {}).get("name", [])
+            if name_vals:
+                result_name = name_vals[0].get("value", "")
+            if _normalize_company_name(result_name) == needle:
+                record_id = result["id"]["record_id"]
+                logger.info(f"Attio company found (normalized match): {company_name} -> {result_name} (ID: {record_id})")
+                return record_id
     except Exception as e:
         logger.warning(f"Attio company search failed for '{company_name}': {e}")
 
-    # Create if not found
+    # --- Strategy 3: Create new ---
     try:
+        values = {"name": [{"value": company_name}]}
+        if root_domain:
+            values["domains"] = [{"domain": root_domain}]
         data = _attio_request(
             "POST",
             "/objects/companies/records",
-            {"data": {"values": {"name": [{"value": company_name}]}}},
+            {"data": {"values": values}},
             api_key=api_key,
         )
         record_id = data["data"]["id"]["record_id"]
@@ -108,14 +185,50 @@ def find_or_create_company(company_name: str, industry: Optional[str] = None, ap
 
 # --- Contact (People) Lookup ---
 
-def find_contact_by_name(name: str, company_name: Optional[str] = None, api_key: Optional[str] = None) -> Optional[str]:
+def find_or_create_contact(
+    name: str,
+    email: Optional[str] = None,
+    company_name: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[str]:
     """
-    Search for a person in Attio by name. Returns record ID or None.
-    Uses the records query endpoint with a name filter.
+    Find or create a person in Attio. Returns record ID or None.
+
+    Dedup strategy (in order):
+      1. Email assert (upsert) - if email provided, uses Attio's native
+         matching_attribute=email_addresses which guarantees uniqueness.
+      2. Name search - searches by name and validates against company if provided.
     """
+    if not name and not email:
+        return None
+
+    # --- Strategy 1: Email-based assert (upsert) ---
+    if email:
+        try:
+            values = {"email_addresses": [{"email_address": email}]}
+            if name:
+                parts = name.strip().split(None, 1)
+                first = parts[0] if parts else name
+                last = parts[1] if len(parts) > 1 else ""
+                values["name"] = [{"first_name": first, "last_name": last, "full_name": name}]
+            data = _attio_request(
+                "PUT",
+                "/objects/people/records",
+                {"data": {"values": values}},
+                params={"matching_attribute": "email_addresses"},
+                api_key=api_key,
+            )
+            record_id = data["data"]["id"]["record_id"]
+            logger.info(f"Attio contact assert (email={email}): {name} (ID: {record_id})")
+            return record_id
+        except Exception as e:
+            logger.warning(f"Attio contact assert failed for email '{email}': {e}")
+            # Fall through to name search
+
     if not name:
         return None
 
+    # --- Strategy 2: Name search with company validation ---
     try:
         payload = {
             "filter": {"name": {"$contains": name}},
@@ -124,10 +237,32 @@ def find_contact_by_name(name: str, company_name: Optional[str] = None, api_key:
         data = _attio_request("POST", "/objects/people/records/query", payload, api_key=api_key)
         results = data.get("data", [])
         if results:
-            return results[0]["id"]["record_id"]
+            if not company_name or len(results) == 1:
+                record_id = results[0]["id"]["record_id"]
+                logger.info(f"Attio contact found: {name} (ID: {record_id})")
+                return record_id
+            # Multiple results and we have a company name - try to match
+            needle = _normalize_company_name(company_name)
+            for result in results:
+                # Check if any associated company matches
+                company_vals = result.get("values", {}).get("company", [])
+                for cv in company_vals:
+                    cv_name = cv.get("value", "")
+                    if _normalize_company_name(cv_name) == needle:
+                        record_id = result["id"]["record_id"]
+                        logger.info(f"Attio contact found (company match): {name} at {company_name} (ID: {record_id})")
+                        return record_id
+            # No company match, return first result as best guess
+            record_id = results[0]["id"]["record_id"]
+            logger.info(f"Attio contact found (no company match, using first): {name} (ID: {record_id})")
+            return record_id
     except Exception as e:
         logger.warning(f"Attio people lookup failed for '{name}': {e}")
     return None
+
+
+# Backward-compatible alias
+find_contact_by_name = find_or_create_contact
 
 
 def query_deals_by_stage(stages: list, limit: int = 50, api_key: Optional[str] = None) -> list:
@@ -203,19 +338,29 @@ def create_deal(
         logger.info(f"[DRY RUN] Score: {score_result.get('total_score')}/100")
         return {"dry_run": True, "deal_name": deal_name}
 
-    # Find or create company
+    # Find or create company (domain-first dedup)
     company = analysis.get("prospect_company", {})
     company_id = None
-    if company.get("name"):
-        company_id = find_or_create_company(company["name"], company.get("industry"), api_key=api_key)
+    if company.get("name") or company.get("domain"):
+        company_id = find_or_create_company(
+            company.get("name", ""),
+            industry=company.get("industry"),
+            domain=company.get("domain") or company.get("website"),
+            api_key=api_key,
+        )
 
-    # Find contacts before deal creation (so we can include in initial PUT)
+    # Find contacts before deal creation (email-first dedup)
     decision_makers = analysis.get("decision_makers", [])
     contact_ids = []
     for dm in decision_makers[:3]:
         dm_name = dm.get("name")
         if dm_name:
-            contact_id = find_contact_by_name(dm_name, company.get("name"), api_key=api_key)
+            contact_id = find_or_create_contact(
+                dm_name,
+                email=dm.get("email"),
+                company_name=company.get("name"),
+                api_key=api_key,
+            )
             if contact_id:
                 contact_ids.append((dm_name, contact_id))
 
@@ -334,32 +479,37 @@ def create_deal(
 def find_deal_by_company(company_name: str, api_key: Optional[str] = None) -> Optional[dict]:
     """
     Search for an existing deal in Attio by company name.
+    Uses normalized matching to catch variants (e.g. "Acme Inc" vs "Acme LLC").
     Returns the first matching deal's record_id, name, and stage, or None.
     """
     if not company_name:
         return None
 
+    needle = _normalize_company_name(company_name)
+
     try:
-        # Search deals with a filter on the deal name containing the company name
         payload = {
             "filter": {"name": {"$contains": company_name}},
-            "limit": 5,
+            "limit": 10,
         }
         data = _attio_request("POST", "/objects/deals/records/query", payload, api_key=api_key)
         results = data.get("data", [])
-        if results:
-            deal = results[0]
-            record_id = deal["id"]["record_id"]
+        for deal in results:
             name_vals = deal.get("values", {}).get("name", [])
             deal_name = name_vals[0].get("value", "") if name_vals else ""
-            stage_vals = deal.get("values", {}).get("stage", [])
-            stage = stage_vals[0].get("status", {}).get("title", "") if stage_vals else ""
-            logger.info(f"Found existing Attio deal for '{company_name}': {deal_name} (ID: {record_id}, stage: {stage})")
-            return {
-                "deal_id": record_id,
-                "deal_name": deal_name,
-                "stage": stage,
-            }
+            # Extract company portion from deal name (format: NN-Company-Rep-Date)
+            parts = deal_name.split("-")
+            deal_company = parts[1].strip() if len(parts) >= 2 else deal_name
+            if _normalize_company_name(deal_company) == needle or _normalize_company_name(deal_name) == needle:
+                record_id = deal["id"]["record_id"]
+                stage_vals = deal.get("values", {}).get("stage", [])
+                stage = stage_vals[0].get("status", {}).get("title", "") if stage_vals else ""
+                logger.info(f"Found existing Attio deal for '{company_name}': {deal_name} (ID: {record_id}, stage: {stage})")
+                return {
+                    "deal_id": record_id,
+                    "deal_name": deal_name,
+                    "stage": stage,
+                }
     except Exception as e:
         logger.warning(f"Attio deal search failed for company '{company_name}': {e}")
     return None

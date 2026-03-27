@@ -1843,15 +1843,23 @@ def _run_calibration(req_data: dict, conn_dict: dict):
     transcript_source = conn_dict.get("transcript_source", "fireflies")
 
     if transcript_source == "zoom" and conn_dict.get("zoom_account_id"):
-        # Pull from Zoom cloud recordings
+        # Pull from Zoom cloud recordings (support multiple user emails, comma-separated)
         import zoom_client
-        zoom_recordings = zoom_client.list_recordings(
-            user_email=conn_dict.get("zoom_user_email", "me"),
-            since=since,
-            account_id=conn_dict.get("zoom_account_id", ""),
-            client_id=conn_dict.get("zoom_client_id", ""),
-            client_secret=conn_dict.get("zoom_client_secret", ""),
-        )
+        zoom_emails = [e.strip() for e in conn_dict.get("zoom_user_email", "me").split(",") if e.strip()]
+        zoom_recordings = []
+        seen_ids = set()
+        for _zoom_email in zoom_emails:
+            recs = zoom_client.list_recordings(
+                user_email=_zoom_email,
+                since=since,
+                account_id=conn_dict.get("zoom_account_id", ""),
+                client_id=conn_dict.get("zoom_client_id", ""),
+                client_secret=conn_dict.get("zoom_client_secret", ""),
+            )
+            for rec in recs:
+                if rec["id"] not in seen_ids:
+                    zoom_recordings.append(rec)
+                    seen_ids.add(rec["id"])
         # Convert to common format
         for rec in zoom_recordings:
             if rec.get("has_transcript"):

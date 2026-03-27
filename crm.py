@@ -8,8 +8,8 @@ Supported CRMs:
 
 Both clients expose the same public interface:
   create_deal(score_result, analysis, metadata, dry_run) -> dict | None
-  find_or_create_company(name, industry) -> str | None
-  find_contact_by_name(name, company_name) -> str | None
+  find_or_create_company(name, industry, domain) -> str | None
+  find_or_create_contact(name, email, company_name) -> str | None
 """
 
 SUPPORTED_CRMS = ("hubspot", "attio")
