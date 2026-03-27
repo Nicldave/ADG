@@ -2141,7 +2141,7 @@ def calibration_report():
 # ── Transcript polling worker ─────────────────────────────────────────────────
 
 def _poll_all_connections():
-    """Poll Fireflies for new transcripts across all connections. Runs on a schedule."""
+    """Poll all transcript sources (Fireflies + Zoom) across all connections."""
     from config import POLLING_INTERVAL_MINUTES
     import time as _time
 
@@ -2154,19 +2154,24 @@ def _poll_all_connections():
     try:
         all_conns = connections.list_connections_full() if hasattr(connections, 'list_connections_full') else []
         for c in all_conns:
-            if c.get("active", True) and c.get("fireflies_api_key"):
+            if not c.get("active", True):
+                continue
+            source = c.get("transcript_source", "fireflies")
+            if source == "fireflies" and c.get("fireflies_api_key"):
+                conns_to_poll.append(c)
+            elif source == "zoom" and c.get("zoom_account_id"):
                 conns_to_poll.append(c)
     except Exception as e:
         logger.warning(f"Failed to list connections for polling: {e}")
 
-    # If no registered connections, use default env var connection
+    # If no registered connections, use default env var connection (Fireflies)
     if not conns_to_poll:
         default = _build_default_connection()
-        if default["fireflies_api_key"]:
+        if default.get("fireflies_api_key"):
             conns_to_poll.append(default)
 
     if not conns_to_poll:
-        logger.info("No connections with Fireflies keys found, skipping poll")
+        logger.info("No pollable connections found, skipping")
         return
 
     lookback = datetime.now() - __import__("datetime").timedelta(minutes=POLLING_INTERVAL_MINUTES * 2)
@@ -2174,18 +2179,66 @@ def _poll_all_connections():
 
     for conn in conns_to_poll:
         conn_name = conn.get("name", "Default")
+        source = conn.get("transcript_source", "fireflies")
+
         try:
-            transcripts = fireflies_client.list_transcripts(
-                since=lookback, limit=10, api_key=conn["fireflies_api_key"]
-            )
-            for t in transcripts:
-                tid = t.get("id")
-                if not tid or _is_processed(tid, conn_name):
-                    continue
-                logger.info(f"[Poller] Processing new transcript: {t.get('title', tid)} for {conn_name}")
-                _process_fireflies_transcript(tid, conn)
-                total_processed += 1
-                _time.sleep(2)  # Small delay between transcripts to respect rate limits
+            if source == "zoom":
+                # Poll Zoom recordings
+                import zoom_client
+                zoom_emails = [e.strip() for e in conn.get("zoom_user_email", "me").split(",") if e.strip()]
+                seen_ids = set()
+                for zoom_email in zoom_emails:
+                    try:
+                        recs = zoom_client.list_recordings(
+                            user_email=zoom_email,
+                            since=lookback,
+                            account_id=conn.get("zoom_account_id", ""),
+                            client_id=conn.get("zoom_client_id", ""),
+                            client_secret=conn.get("zoom_client_secret", ""),
+                        )
+                        for rec in recs:
+                            rid = rec.get("id", "")
+                            if not rid or rid in seen_ids or not rec.get("has_transcript"):
+                                continue
+                            seen_ids.add(rid)
+                            zoom_tid = f"zoom_{rid}"
+                            if _is_processed(zoom_tid, conn_name):
+                                continue
+                            # Download transcript
+                            text = zoom_client.download_transcript(
+                                rec.get("transcript_url", ""),
+                                account_id=conn.get("zoom_account_id", ""),
+                                client_id=conn.get("zoom_client_id", ""),
+                                client_secret=conn.get("zoom_client_secret", ""),
+                            )
+                            if len(text) < 500:
+                                logger.info(f"[Poller] Zoom transcript too short ({len(text)} chars), skipping: {rec.get('title')}")
+                                _mark_processed(zoom_tid, conn_name, status="skipped_short")
+                                continue
+                            # Score it
+                            metadata = {"title": rec.get("title", "Zoom Call"), "date": rec.get("date", ""), "source": "zoom"}
+                            logger.info(f"[Poller] Scoring Zoom transcript: {rec.get('title')} for {conn_name}")
+                            _process_transcript_text(text, metadata, conn)
+                            _mark_processed(zoom_tid, conn_name, status="processed")
+                            total_processed += 1
+                            _time.sleep(2)
+                    except Exception as e:
+                        logger.error(f"[Poller] Failed polling Zoom user {zoom_email}: {e}")
+
+            else:
+                # Poll Fireflies
+                transcripts = fireflies_client.list_transcripts(
+                    since=lookback, limit=10, api_key=conn["fireflies_api_key"]
+                )
+                for t in transcripts:
+                    tid = t.get("id")
+                    if not tid or _is_processed(tid, conn_name):
+                        continue
+                    logger.info(f"[Poller] Processing Fireflies transcript: {t.get('title', tid)} for {conn_name}")
+                    _process_fireflies_transcript(tid, conn)
+                    total_processed += 1
+                    _time.sleep(2)
+
         except Exception as e:
             logger.error(f"[Poller] Failed polling for {conn_name}: {e}")
             _send_error_alert(e, f"Polling for connection {conn_name}", conn_name)
