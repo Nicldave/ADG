@@ -2217,10 +2217,15 @@ def _poll_all_connections():
                                 continue
                             # Score it
                             metadata = {"title": rec.get("title", "Zoom Call"), "date": rec.get("date", ""), "source": "zoom"}
-                            logger.info(f"[Poller] Scoring Zoom transcript: {rec.get('title')} for {conn_name}")
-                            _process_transcript_text(text, metadata, conn)
-                            _mark_processed(zoom_tid, conn_name, status="processed")
-                            total_processed += 1
+                            logger.info(f"[Poller] Scoring Zoom transcript: {rec.get('title')} ({zoom_tid}) for {conn_name}")
+                            try:
+                                _process_transcript_text(text, metadata, conn)
+                                _mark_processed(zoom_tid, conn_name, status="processed")
+                                total_processed += 1
+                                logger.info(f"[Poller] Successfully scored and marked: {zoom_tid}")
+                            except Exception as score_err:
+                                logger.error(f"[Poller] Scoring failed for {zoom_tid}: {score_err}")
+                                _mark_processed(zoom_tid, conn_name, status="error", error=str(score_err))
                             _time.sleep(2)
                     except Exception as e:
                         logger.error(f"[Poller] Failed polling Zoom user {zoom_email}: {e}")
