@@ -470,7 +470,7 @@ def _is_processed(transcript_id: str, connection_name: str = "Default") -> bool:
                 if not row:
                     return False
                 # Only block if successfully processed or permanently errored
-                return row[0] in ("success", "error")
+                return row[0] in ("success", "processed", "error", "skipped_short")
             except Exception as e:
                 logger.warning(f"Failed to check processed status: {e}")
                 return False
@@ -2220,7 +2220,7 @@ def _poll_all_connections():
                             logger.info(f"[Poller] Scoring Zoom transcript: {rec.get('title')} ({zoom_tid}) for {conn_name}")
                             try:
                                 _process_transcript_text(text, metadata, conn)
-                                _mark_processed(zoom_tid, conn_name, status="processed")
+                                _mark_processed(zoom_tid, conn_name, status="success")
                                 total_processed += 1
                                 logger.info(f"[Poller] Successfully scored and marked: {zoom_tid}")
                             except Exception as score_err:
@@ -2294,6 +2294,9 @@ def debug_processed():
         if conn:
             try:
                 cur = conn.cursor()
+                # Fix any "processed" status records to "success" so dedup catches them
+                cur.execute("UPDATE processed_transcripts SET status = 'success' WHERE status = 'processed'")
+                conn.commit()
                 cur.execute("SELECT transcript_id, connection_name, status, score, processed_at FROM processed_transcripts ORDER BY processed_at DESC LIMIT 30")
                 rows = cur.fetchall()
                 cur.close()
