@@ -2286,6 +2286,28 @@ def poll_now():
     return {"status": "poll complete"}
 
 
+@app.get("/debug/processed")
+def debug_processed():
+    """Show processed transcripts table for debugging dedup issues."""
+    if database.is_available():
+        conn = database.get_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT transcript_id, connection_name, status, score, processed_at FROM processed_transcripts ORDER BY processed_at DESC LIMIT 30")
+                rows = cur.fetchall()
+                cur.close()
+                return {"count": len(rows), "records": [
+                    {"transcript_id": r[0], "connection_name": r[1], "status": r[2], "score": r[3], "processed_at": str(r[4])}
+                    for r in rows
+                ]}
+            except Exception as e:
+                return {"error": str(e)}
+            finally:
+                database.put_conn(conn)
+    return {"error": "database not available"}
+
+
 # ── Batch scoring ────────────────────────────────────────────────────────────
 
 class BatchScoreRequest(BaseModel):
