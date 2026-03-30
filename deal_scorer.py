@@ -254,12 +254,28 @@ def score_deal(analysis: dict) -> dict:
         recommendation = "not_a_deal"
         confidence = "high" if total < 30 else "low"
 
-    # Deal name — matches Kevin's Attio convention: NN-{Company}-KO-{YYYY.MM}
+    # Deal name — matches Kevin's Attio convention: NN-{Company}-{Rep Initials}-{YYYY.MM}
     from datetime import datetime as _dt
     company = analysis.get("prospect_company", {})
     company_name = company.get("name") or "Unknown Company"
     month_str = _dt.now().strftime("%Y.%m")
-    deal_name = f"NN-{company_name}-KO-{month_str}"
+    # Extract rep initials from the analysis (first internal/seller participant)
+    rep_initials = "KO"  # fallback
+    seller = analysis.get("seller", {})
+    seller_name = seller.get("name", "") if isinstance(seller, dict) else ""
+    if not seller_name:
+        participants = analysis.get("participants", [])
+        for p in participants:
+            if isinstance(p, dict) and p.get("role") in ("seller", "rep", "internal", "host"):
+                seller_name = p.get("name", "")
+                break
+    if seller_name:
+        parts = seller_name.strip().split()
+        if len(parts) >= 2:
+            rep_initials = (parts[0][0] + parts[-1][0]).upper()
+        elif len(parts) == 1 and len(parts[0]) >= 2:
+            rep_initials = parts[0][:2].upper()
+    deal_name = f"NN-{company_name}-{rep_initials}-{month_str}"
 
     # Key insight: best quote from the analysis
     key_insight = _extract_key_insight(analysis, framework_key)
