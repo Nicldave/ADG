@@ -106,16 +106,32 @@
                             </ol>
                         </div>
                         <div id="help-zoom" style="display:none;">
+                            <p style="margin-bottom: 8px; color: #666; font-size: 13px;">This takes about 10 minutes. You'll need Zoom admin access.</p>
                             <ol>
-                                <li>Go to <strong>marketplace.zoom.us</strong> and sign in</li>
-                                <li>Click <strong>Develop > Build App</strong></li>
-                                <li>Choose <strong>Server-to-Server OAuth</strong> app type</li>
-                                <li>Name it "Fairplay" and create it</li>
-                                <li>Under <strong>Scopes</strong>, add: <code>cloud_recording:read:list_user_recordings</code> and <code>cloud_recording:read:recording</code></li>
-                                <li>Under <strong>Feature > Event Subscriptions</strong>, add: <code>recording.transcript_completed</code></li>
-                                <li>You'll set the webhook URL after this setup completes</li>
-                                <li>Copy the <strong>Account ID</strong>, <strong>Client ID</strong>, and <strong>Client Secret</strong> from the app page</li>
+                                <li>Go to <strong>marketplace.zoom.us</strong> and sign in with your Zoom admin account</li>
+                                <li>Click <strong>Develop</strong> in the top nav, then <strong>Build App</strong></li>
+                                <li>You'll see several app types. Choose <strong>Server-to-Server OAuth</strong> (not "Webhook Only" or "OAuth")
+                                    <br><span style="color: #d97706; font-size: 12px;">Common mistake: "Webhook Only" apps won't work because they can't pull recordings</span>
+                                </li>
+                                <li>Name the app <strong>"Fairplay"</strong> (or any name you prefer) and click Create</li>
+                                <li><strong>App Credentials page:</strong> You'll see Account ID, Client ID, and Client Secret. Copy all three and paste them in the fields above
+                                    <br><span style="color: #666; font-size: 12px;">Tip: Keep this page open, you'll come back to it</span>
+                                </li>
+                                <li><strong>Information page:</strong> Fill in your email under Developer Contact. You can skip the Privacy Policy, Terms, and Support URLs. Click <strong>Continue</strong></li>
+                                <li><strong>Feature page:</strong> You'll see a Secret Token and Event Subscriptions toggle. Leave Event Subscriptions off for now. Click <strong>Continue</strong>
+                                    <br><span style="color: #d97706; font-size: 12px;">If it asks for an Event Notification URL, just skip it. We don't need webhooks.</span>
+                                </li>
+                                <li><strong>Scopes page:</strong> Click <strong>+ Add Scopes</strong>. Search for "recording" and add these two:
+                                    <ul style="margin: 4px 0; font-size: 13px;">
+                                        <li><code>cloud_recording:read:list_user_recordings</code> (under "View all user recordings")</li>
+                                        <li><code>cloud_recording:read:meeting_transcript</code> (under "Read meeting transcript")</li>
+                                    </ul>
+                                    Click <strong>Done</strong>, then <strong>Continue</strong>
+                                </li>
+                                <li><strong>Activation page:</strong> Click <strong>Activate your app</strong>. If it says you're missing something, check that both scopes were added</li>
                             </ol>
+                            <p style="margin-top: 8px; color: #666; font-size: 13px;"><strong>Also make sure</strong> cloud recording and audio transcript are turned on in your Zoom account settings (Settings > Recording > Cloud recording + Audio transcript). Most accounts have this on already.</p>
+                            <p style="margin-top: 8px; font-size: 13px;"><strong>Alternative:</strong> If the Zoom setup feels like too much, you can use <strong>Fireflies</strong> instead. It sits on top of Zoom, takes 2 minutes to set up, and works the same way. Just select Fireflies above.</p>
                         </div>
                         <div id="help-gong" style="display:none;">
                             <ol>
@@ -159,21 +175,26 @@
                             </ol>
                         </div>
                         <div id="help-hubspot" style="display:none;">
+                            <p style="margin-bottom: 8px; color: #666; font-size: 13px;">You'll need HubSpot admin access for this.</p>
                             <ol>
                                 <li>Go to <strong>app.hubspot.com</strong> and log in</li>
                                 <li>Click <strong>Settings</strong> (gear icon, top right)</li>
-                                <li>Go to <strong>Integrations > Private Apps</strong></li>
-                                <li>Click <strong>Create a private app</strong></li>
-                                <li>Name it "Fairplay"</li>
-                                <li>Under <strong>Scopes</strong>, add:
-                                    <code>crm.objects.deals.write</code>,
-                                    <code>crm.objects.deals.read</code>,
-                                    <code>crm.objects.contacts.read</code>,
-                                    <code>crm.objects.companies.read</code>
+                                <li>Go to <strong>Integrations > Private Apps</strong>
+                                    <br><span style="color: #666; font-size: 12px;">Note: HubSpot recently moved Private Apps to "Legacy Apps." If you see that page, click "Create legacy app" or use an existing one.</span>
                                 </li>
-                                <li>Click <strong>Create app</strong>, then copy the <strong>Access token</strong></li>
+                                <li>Click <strong>Create a private app</strong> (or "Create legacy app") and name it <strong>"Fairplay"</strong></li>
+                                <li>Under <strong>Scopes</strong>, add these four:
+                                    <ul style="margin: 4px 0; font-size: 13px;">
+                                        <li><code>crm.objects.deals.write</code></li>
+                                        <li><code>crm.objects.deals.read</code></li>
+                                        <li><code>crm.objects.contacts.read</code></li>
+                                        <li><code>crm.objects.companies.read</code></li>
+                                    </ul>
+                                </li>
+                                <li>Click <strong>Create app</strong>, then copy the <strong>Access token</strong> (starts with "pat-")</li>
                                 <li>Paste the token above</li>
                             </ol>
+                            <p style="margin-top: 8px; color: #666; font-size: 13px;">If you already have a Private/Legacy App with deal + contact + company access, you can reuse that token instead of creating a new one.</p>
                         </div>
                     </div>
                 </div>
