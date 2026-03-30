@@ -277,8 +277,8 @@ def score_deal(analysis: dict) -> dict:
             rep_initials = parts[0][:2].upper()
     deal_name = f"NN-{company_name}-{rep_initials}-{month_str}"
 
-    # Key insight: best quote from the analysis
-    key_insight = _extract_key_insight(analysis, framework_key)
+    # Key insight: framework summary of what was covered and what's missing
+    key_insight = _extract_key_insight(analysis, framework_key, breakdown)
 
     result = {
         "total_score": total,
@@ -297,36 +297,51 @@ def score_deal(analysis: dict) -> dict:
     return result
 
 
-def _extract_key_insight(analysis: dict, framework_key: str) -> str:
-    """Pull the most impactful quote from the analysis."""
-    # For named frameworks, find the highest-scoring category's evidence
-    if framework_key != "custom":
-        fw_scores = analysis.get("framework_scores", {})
-        best_key = None
-        best_score = -1
-        for key, val in fw_scores.items():
-            if isinstance(val, dict) and val.get("score", 0) > best_score:
-                best_score = val["score"]
-                best_key = key
-        if best_key and isinstance(fw_scores[best_key], dict):
-            evidence = fw_scores[best_key].get("evidence", [])
-            if evidence:
-                return str(evidence[0])[:120]
-            assessment = fw_scores[best_key].get("assessment", "")
-            if assessment:
-                return assessment[:120]
+def _extract_key_insight(analysis: dict, framework_key: str, breakdown: dict = None) -> str:
+    """Generate a one-line framework summary: what was covered well and what's missing."""
+    if not breakdown:
         return ""
 
-    # Custom framework: original logic
-    pain = analysis.get("pain_signals", [])
-    buying = analysis.get("buying_signals", [])
-    if pain:
-        top_pain = max(pain, key=lambda x: x.get("severity", 0))
-        return top_pain.get("quote", "")[:120]
-    elif buying:
-        top_buy = next((b for b in buying if b.get("strength") == "strong"), buying[0])
-        return top_buy.get("evidence", "")[:120]
-    return ""
+    # Categorize each criterion as strong, moderate, or weak based on score percentage
+    strong = []
+    weak = []
+    for key, data in breakdown.items():
+        label = data.get("label", key).lower()
+        score = data.get("score", 0)
+        max_score = data.get("max", 25)
+        pct = score / max_score if max_score > 0 else 0
+        if pct >= 0.75:
+            strong.append(label)
+        elif pct < 0.5:
+            weak.append(label)
+
+    # Build the summary
+    parts = []
+    if strong:
+        parts.append(f"Strong {', '.join(strong)}")
+    if weak:
+        parts.append(f"{'but ' if strong else ''}{', '.join(weak)} {'need' if len(weak) > 1 else 'needs'} more clarity")
+
+    if not parts:
+        return ""
+
+    insight = ". ".join(parts)
+
+    # Add a specific detail from the analysis if available
+    detail = ""
+    fw_scores = analysis.get("framework_scores", {})
+    # Find the weakest category and pull its assessment for context
+    if weak and fw_scores:
+        for key, val in fw_scores.items():
+            if isinstance(val, dict) and val.get("label", key).lower() in weak:
+                assessment = val.get("assessment", "")
+                if assessment:
+                    detail = assessment[:80]
+                    break
+
+    if detail:
+        return f"{insight}. {detail}"[:200]
+    return insight[:200]
 
 
 def format_score_report(score_result: dict) -> str:
