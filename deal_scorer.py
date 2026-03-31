@@ -261,14 +261,17 @@ def score_deal(analysis: dict) -> dict:
     month_str = _dt.now().strftime("%Y.%m")
     # Extract rep initials from the analysis (first internal/seller participant)
     rep_initials = "KO"  # fallback
-    seller = analysis.get("seller", {})
-    seller_name = seller.get("name", "") if isinstance(seller, dict) else ""
+    seller_name = ""
+    # Find the non-prospect participant (the rep/seller)
+    participants = analysis.get("participants", [])
+    for p in participants:
+        if isinstance(p, dict) and p.get("is_prospect") is False and p.get("name"):
+            seller_name = p["name"]
+            break
+    # Fallback: check for a seller field
     if not seller_name:
-        participants = analysis.get("participants", [])
-        for p in participants:
-            if isinstance(p, dict) and p.get("role") in ("seller", "rep", "internal", "host"):
-                seller_name = p.get("name", "")
-                break
+        seller = analysis.get("seller", {})
+        seller_name = seller.get("name", "") if isinstance(seller, dict) else ""
     if seller_name:
         parts = seller_name.strip().split()
         if len(parts) >= 2:
