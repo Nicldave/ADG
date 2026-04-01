@@ -28,7 +28,24 @@ You must be precise and evidence-based. Every field you fill in must be backed b
 - **follow_up**: Continuing a previous conversation, progressing toward decision
 - **negotiation**: Discussing terms, pricing, scope
 - **internal**: Internal team meeting (not a sales opportunity)
+- **recruiting**: Candidate interview, hiring conversation, talent assessment
+- **vendor_eval**: Evaluating a vendor/tool, being sold to (company is the buyer)
+- **partner**: Partnership discussion, referral conversation, non-sales relationship
 - **other**: Doesn't fit above categories
+
+## Sales Conversation Rules
+Set is_sales_conversation to TRUE only if:
+- One party is actively selling a product or service to the other
+- There is a prospect company that could become a paying customer
+- The conversation involves evaluating fit, discussing pricing, or scoping work
+
+Set is_sales_conversation to FALSE if:
+- This is a job interview or candidate screening (recruiting)
+- This is an internal team meeting
+- Both parties work for the same company
+- The company is being sold TO (vendor evaluation, the company is the buyer not the seller)
+- This is a networking, partnership, or referral conversation
+- This is a coaching, mentoring, or advisory session with no sales intent
 """
 
 # Custom framework keeps the original Ascent-specific pain categories
@@ -54,7 +71,7 @@ CUSTOM_OUTPUT_FORMAT = """
 Return ONLY valid JSON (no markdown, no commentary) matching this exact structure:
 
 {
-  "meeting_type": "discovery|demo|follow_up|negotiation|internal|other",
+  "meeting_type": "discovery|demo|follow_up|negotiation|internal|recruiting|vendor_eval|partner|other",
   "is_sales_conversation": true/false,
   "participants": [
     {"name": "string", "role": "string or null", "company": "string or null", "is_prospect": true/false}
@@ -118,7 +135,7 @@ def _build_framework_output_format(framework_key: str) -> str:
 Return ONLY valid JSON (no markdown, no commentary) matching this exact structure:
 
 {{
-  "meeting_type": "discovery|demo|follow_up|negotiation|internal|other",
+  "meeting_type": "discovery|demo|follow_up|negotiation|internal|recruiting|vendor_eval|partner|other",
   "is_sales_conversation": true/false,
   "framework": "{framework_key}",
   "participants": [
