@@ -763,14 +763,23 @@ def _send_slack_notification(
     base_url = _get_base_url()
     feedback_id = deal_id or deal_name
 
-    # Build score breakdown line
+    # Build score breakdown with per-category assessments
     breakdown = score_result.get("breakdown", {})
     framework_name = score_result.get("framework", "custom").upper()
-    breakdown_parts = []
+    fw_scores = analysis.get("framework_scores", {})
+    breakdown_lines = []
     for cat, data in breakdown.items():
         label = data.get("label", cat)
-        breakdown_parts.append(f"{label}: {data['score']}/{data['max']}")
-    breakdown_line = " | ".join(breakdown_parts) if breakdown_parts else "N/A"
+        score_str = f"{data['score']}/{data['max']}"
+        # Get the assessment from the analysis framework_scores
+        assessment = ""
+        if isinstance(fw_scores.get(cat), dict):
+            assessment = fw_scores[cat].get("assessment", "")
+        if assessment:
+            breakdown_lines.append(f"  {label}: *{score_str}* - {assessment[:100]}")
+        else:
+            breakdown_lines.append(f"  {label}: *{score_str}*")
+    breakdown_block = "\n".join(breakdown_lines) if breakdown_lines else "N/A"
 
     # Shadow mode prefix
     shadow_line = ""
@@ -799,7 +808,7 @@ def _send_slack_notification(
         f"{followup_line}"
         f"Score: *{score}/100* ({framework_name}) | Recommendation: *{rec}*\n"
         f"Deal: {deal_name}\n"
-        f"Breakdown: {breakdown_line}\n"
+        f"Breakdown:\n{breakdown_block}\n"
         f"Insight: _{score_result.get('key_insight', 'N/A')}_\n\n"
         f":thumbsup: <{base_url}/feedback/{feedback_id}?vote=good_deal|Good Deal>  "
         f":thumbsdown: <{base_url}/feedback/{feedback_id}?vote=not_a_deal|Not a Deal>  "
