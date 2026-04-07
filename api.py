@@ -471,7 +471,7 @@ def _is_processed(transcript_id: str, connection_name: str = "Default") -> bool:
                 if not row:
                     return False
                 # Block if any terminal status
-                return row[0] in ("success", "processed", "error", "skipped_short")
+                return row[0] in ("success", "processed", "error", "skipped_short", "no_show")
             except Exception as e:
                 logger.warning(f"Failed to check processed status: {e}")
                 return False
@@ -642,8 +642,30 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         metadata = fireflies_client.get_meeting_metadata(transcript) if transcript else {}
 
         if not text or len(text) < 500:
-            logger.info(f"Transcript {transcript_id} too short ({len(text) if text else 0} chars), will retry next cycle")
-            return  # Don't mark as processed, let next poll retry
+            conn_name = conn.get("name", "Default")
+            retry_count = _get_retry_count(transcript_id, conn_name)
+            title = metadata.get("title", "Unknown Meeting") if metadata else "Unknown Meeting"
+            duration = metadata.get("duration", 0) if metadata else 0
+            if retry_count >= 2:
+                # After 3 attempts, mark as no-show and notify
+                _mark_processed(transcript_id, conn_name, status="no_show")
+                slack_url = conn.get("slack_webhook_url")
+                if slack_url:
+                    import requests as _req
+                    no_show_msg = (
+                        f":no_entry: *Fairplay: {title}*\n"
+                        f"*No Show* - Call was too short for scoring ({len(text) if text else 0} chars)\n"
+                        f"_The call recording had no usable transcript. This usually means the other party didn't show up or there was a connection issue._"
+                    )
+                    try:
+                        _req.post(slack_url, json={"text": no_show_msg}, timeout=10)
+                    except Exception:
+                        pass
+                logger.info(f"Transcript {transcript_id} marked as no-show after 3 attempts ({len(text) if text else 0} chars)")
+                return
+            _increment_retry(transcript_id, conn_name)
+            logger.info(f"Transcript {transcript_id} too short ({len(text) if text else 0} chars), attempt {retry_count + 1}/3, will retry")
+            return
 
         # 2. Analyze with Claude
         analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
