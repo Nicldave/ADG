@@ -158,6 +158,10 @@
                         <div class="option-name">HubSpot</div>
                         <div class="option-desc">All-in-one CRM</div>
                     </div>
+                    <div class="option-card" data-crm="salesforce" onclick="selectCRM(this)">
+                        <div class="option-name">Salesforce</div>
+                        <div class="option-desc">Enterprise CRM</div>
+                    </div>
                 </div>
                 <div class="form-group" id="crm-key-group" style="display: none;">
                     <label id="crm-key-label">CRM API Key</label>
@@ -195,6 +199,29 @@
                                 <li>Paste the token above</li>
                             </ol>
                             <p style="margin-top: 8px; color: #666; font-size: 13px;">If you already have a Private/Legacy App with deal + contact + company access, you can reuse that token instead of creating a new one.</p>
+                        </div>
+                        <div id="help-salesforce" style="display:none;">
+                            <p style="margin-bottom: 8px; color: #666; font-size: 13px;">You'll need Salesforce admin access.</p>
+                            <ol>
+                                <li>Go to <strong>Setup</strong> in your Salesforce org (gear icon > Setup)</li>
+                                <li>Search for <strong>"App Manager"</strong> in Quick Find</li>
+                                <li>Click <strong>New Connected App</strong></li>
+                                <li>Name it <strong>"Fairplay"</strong>, fill in your email</li>
+                                <li>Check <strong>Enable OAuth Settings</strong></li>
+                                <li>Callback URL: <code>https://login.salesforce.com/services/oauth2/callback</code></li>
+                                <li>Under <strong>Selected OAuth Scopes</strong>, add:
+                                    <ul style="margin: 4px 0; font-size: 13px;">
+                                        <li><code>Full access (full)</code></li>
+                                        <li><code>Perform requests at any time (refresh_token, offline_access)</code></li>
+                                    </ul>
+                                </li>
+                                <li>Save and wait 2-10 minutes for Salesforce to activate the app</li>
+                                <li>Copy your <strong>Instance URL</strong> (e.g. https://yourcompany.my.salesforce.com) and your <strong>Access Token</strong></li>
+                                <li>Paste them above in this format: <code>instance_url|access_token</code>
+                                    <br><span style="color: #666; font-size: 12px;">Example: https://acme.my.salesforce.com|00Dxx0000001gPL!AR8...</span>
+                                </li>
+                            </ol>
+                            <p style="margin-top: 8px; color: #666; font-size: 13px;">Need help getting an access token? Your Salesforce admin can generate one from Setup > Users > your user > "Login" button, then copy the session ID from the URL.</p>
                         </div>
                     </div>
                 </div>
@@ -333,10 +360,14 @@
             // Show correct CRM help
             document.getElementById('help-attio').style.display = config.crm === 'attio' ? 'block' : 'none';
             document.getElementById('help-hubspot').style.display = config.crm === 'hubspot' ? 'block' : 'none';
+            document.getElementById('help-salesforce').style.display = config.crm === 'salesforce' ? 'block' : 'none';
             document.getElementById('crm-help').classList.remove('open');
 
-            // Update label
-            document.getElementById('crm-key-label').textContent = config.crm === 'hubspot' ? 'HubSpot Private App Token' : 'Attio API Key';
+            // Update label and placeholder
+            const labels = { attio: 'Attio API Key', hubspot: 'HubSpot Private App Token', salesforce: 'Salesforce Instance URL | Access Token' };
+            const placeholders = { attio: 'Paste your Attio API key', hubspot: 'Paste your HubSpot token (starts with pat-)', salesforce: 'https://yourcompany.my.salesforce.com|00Dxx...' };
+            document.getElementById('crm-key-label').textContent = labels[config.crm] || 'CRM API Key';
+            document.getElementById('crm-key').placeholder = placeholders[config.crm] || 'Paste your API key';
         }
 
         function selectFramework(el) {

@@ -3,16 +3,20 @@ CRM Factory - Multi-CRM Support
 Returns the right CRM client module based on the --crm argument.
 
 Supported CRMs:
-  hubspot  (default) - HubSpot CRM via private app token
-  attio              - Attio CRM via API token
+  hubspot     (default) - HubSpot CRM via private app token
+  attio                 - Attio CRM via API token
+  salesforce            - Salesforce via Connected App (instance_url|access_token)
 
-Both clients expose the same public interface:
+All clients expose the same public interface:
   create_deal(score_result, analysis, metadata, dry_run) -> dict | None
   find_or_create_company(name, industry, domain) -> str | None
   find_or_create_contact(name, email, company_name) -> str | None
+  find_deal_by_company(company_name) -> dict | None
+  update_deal_stage(deal_id, stage) -> dict | None
+  query_deals_by_stage(stages, limit) -> list[dict]
 """
 
-SUPPORTED_CRMS = ("hubspot", "attio")
+SUPPORTED_CRMS = ("hubspot", "attio", "salesforce")
 
 
 def get_client(crm: str = "hubspot"):
@@ -31,6 +35,9 @@ def get_client(crm: str = "hubspot"):
     elif crm == "hubspot":
         import hubspot_client
         return hubspot_client
+    elif crm == "salesforce":
+        import salesforce_client
+        return salesforce_client
     else:
         raise ValueError(
             f"Unsupported CRM: '{crm}'. Choose from: {', '.join(SUPPORTED_CRMS)}"

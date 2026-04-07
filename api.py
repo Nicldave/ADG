@@ -252,7 +252,7 @@ def create_deal(req: CreateDealRequest):
     Create a deal in the selected CRM from a previously analyzed transcript.
     Pass the analysis and score_result from /analyze.
     """
-    if req.crm not in ("hubspot", "attio"):
+    if req.crm not in ("hubspot", "attio", "salesforce"):
         raise HTTPException(status_code=400, detail=f"Unsupported CRM: '{req.crm}'. Options: hubspot, attio")
 
     try:
@@ -355,7 +355,7 @@ def create_connection(req: ConnectionRequest, request: Request):
     if not user and not (dealsmart_key and api_key == dealsmart_key) and dealsmart_key:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    if req.crm not in ("hubspot", "attio"):
+    if req.crm not in ("hubspot", "attio", "salesforce"):
         raise HTTPException(status_code=400, detail=f"Unsupported CRM: '{req.crm}'")
     if req.framework not in FRAMEWORK_NAMES:
         raise HTTPException(status_code=400, detail=f"Unknown framework: '{req.framework}'")
