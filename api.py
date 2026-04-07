@@ -565,18 +565,37 @@ def _increment_retry(transcript_id: str, connection_name: str = "Default"):
                 database.put_conn(conn)
 
 
-def _send_error_alert(error: Exception, context: str, connection_name: str = "Default"):
-    """Post pipeline error to Slack for operator visibility."""
+def _send_error_alert(error: Exception, context: str, connection_name: str = "Default",
+                      meeting_title: str = "", reason: str = ""):
+    """Post pipeline error to Slack for operator visibility with human-readable reason."""
     from config import ERROR_SLACK_WEBHOOK_URL
     url = ERROR_SLACK_WEBHOOK_URL
     if not url:
         return
     import requests as req_lib
+
+    # Generate human-readable reason if not provided
+    if not reason:
+        err_str = str(error)
+        if "'NoneType' object has no attribute 'get'" in err_str:
+            reason = "Transcript was empty or not ready. The call recording service may have failed to transcribe this call."
+        elif "too short" in err_str.lower():
+            reason = "Transcript was too short to analyze (under 500 characters). Likely a very brief call or connection issue."
+        elif "rate limit" in err_str.lower() or "429" in err_str:
+            reason = "API rate limit hit. Will retry on the next polling cycle."
+        elif "timeout" in err_str.lower():
+            reason = "Request timed out. Will retry on the next polling cycle."
+        else:
+            reason = "Unexpected error during processing. Check logs for details."
+
+    title_line = f"Meeting: {meeting_title}\n" if meeting_title else ""
     text = (
         f":red_circle: *Fairplay Pipeline Error*\n"
         f"Connection: {connection_name}\n"
+        f"{title_line}"
         f"Context: {context}\n"
-        f"Error: `{type(error).__name__}: {str(error)[:500]}`\n"
+        f"*Reason:* {reason}\n"
+        f"Error: `{type(error).__name__}: {str(error)[:300]}`\n"
         f"Time: {datetime.now().isoformat()}"
     )
     try:
@@ -703,7 +722,14 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         retry_count = _get_retry_count(transcript_id, conn_name)
         if retry_count >= 2:
             _mark_processed(transcript_id, conn_name, status="error", error=str(e)[:500])
-            _send_error_alert(e, f"Fireflies transcript {transcript_id} (failed after 3 attempts)", conn_name)
+            # Try to get meeting title for the error alert
+            _err_title = ""
+            try:
+                _err_t = fireflies_client.get_transcript(transcript_id, api_key=conn.get("fireflies_api_key", ""))
+                _err_title = _err_t.get("title", "") if _err_t else ""
+            except Exception:
+                pass
+            _send_error_alert(e, f"Fireflies transcript {transcript_id} (failed after 3 attempts)", conn_name, meeting_title=_err_title)
         else:
             _increment_retry(transcript_id, conn_name)
             logger.info(f"Transcript {transcript_id} attempt {retry_count + 1}/3 failed, will retry next cycle")
