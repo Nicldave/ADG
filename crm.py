@@ -16,7 +16,7 @@ All clients expose the same public interface:
   query_deals_by_stage(stages, limit) -> list[dict]
 """
 
-SUPPORTED_CRMS = ("hubspot", "attio", "salesforce")
+SUPPORTED_CRMS = ("hubspot", "attio", "salesforce", "pipedrive", "close", "copper", "zoho", "freshsales")
 
 
 def get_client(crm: str = "hubspot"):
@@ -38,6 +38,21 @@ def get_client(crm: str = "hubspot"):
     elif crm == "salesforce":
         import salesforce_client
         return salesforce_client
+    elif crm == "pipedrive":
+        import pipedrive_client
+        return pipedrive_client
+    elif crm == "close":
+        import close_client
+        return close_client
+    elif crm == "copper":
+        import copper_client
+        return copper_client
+    elif crm == "zoho":
+        import zoho_client
+        return zoho_client
+    elif crm == "freshsales":
+        import freshsales_client
+        return freshsales_client
     else:
         raise ValueError(
             f"Unsupported CRM: '{crm}'. Choose from: {', '.join(SUPPORTED_CRMS)}"
