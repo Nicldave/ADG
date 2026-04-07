@@ -127,22 +127,25 @@
                 // Deal name
                 document.getElementById('result-dealname').textContent = result.deal_name || 'N/A';
 
-                // Breakdown
+                // Breakdown with per-category assessments
                 const breakdown = result.score_result?.breakdown || {};
+                const fwScores = result.analysis?.framework_scores || {};
                 let breakdownHtml = '';
                 for (const [key, val] of Object.entries(breakdown)) {
                     const label = val.label || key;
                     const pct = (val.score / val.max) * 100;
                     const color = pct >= 70 ? '#22c55e' : pct >= 50 ? '#f59e0b' : '#ef4444';
+                    const assessment = fwScores[key]?.assessment || '';
                     breakdownHtml += `
                         <div class="breakdown-item">
                             <div class="breakdown-label">
-                                <span>${label}</span>
-                                <span style="font-weight: 600;">${val.score}/${val.max}</span>
+                                <span style="font-weight: 600;">${label}</span>
+                                <span style="font-weight: 700;">${val.score}/${val.max}</span>
                             </div>
                             <div class="breakdown-bar">
                                 <div class="breakdown-fill" style="width: ${pct}%; background: ${color};"></div>
                             </div>
+                            ${assessment ? `<div style="font-size: 13px; color: #666; margin-top: 4px; padding-left: 2px;">${assessment}</div>` : ''}
                         </div>
                     `;
                 }
