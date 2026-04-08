@@ -2306,6 +2306,47 @@ def _poll_all_connections():
             logger.error(f"[Poller] Failed polling for {conn_name}: {e}")
             _send_error_alert(e, f"Polling for connection {conn_name}", conn_name)
 
+    # Retry stuck transcripts (retrying status, older than lookback window)
+    if database.is_available():
+        db_conn = database.get_conn()
+        if db_conn:
+            try:
+                cur = db_conn.cursor()
+                cur.execute(
+                    "SELECT transcript_id, connection_name FROM processed_transcripts "
+                    "WHERE status = 'retrying' ORDER BY processed_at ASC LIMIT 5"
+                )
+                retries = cur.fetchall()
+                cur.close()
+                if retries:
+                    logger.info(f"[Poller] Found {len(retries)} stuck transcripts to retry")
+                for tid, cname in retries:
+                    # Find the matching connection
+                    retry_conn = None
+                    for c in conns_to_poll:
+                        if c.get("name", "Default") == cname or cname == "Default":
+                            retry_conn = c
+                            break
+                    if not retry_conn:
+                        retry_conn = _build_default_connection()
+
+                    if tid.startswith("zoom_"):
+                        # Can't retry Zoom without re-downloading, skip for now
+                        logger.info(f"[Poller] Skipping Zoom retry for {tid} (needs re-download)")
+                        continue
+                    else:
+                        logger.info(f"[Poller] Retrying stuck Fireflies transcript: {tid}")
+                        try:
+                            _process_fireflies_transcript(tid, retry_conn)
+                            total_processed += 1
+                        except Exception as e:
+                            logger.error(f"[Poller] Retry failed for {tid}: {e}")
+                    _time.sleep(2)
+            except Exception as e:
+                logger.warning(f"[Poller] Failed to check retrying transcripts: {e}")
+            finally:
+                database.put_conn(db_conn)
+
     logger.info(f"Polling complete. Processed {total_processed} new transcript(s).")
 
 
