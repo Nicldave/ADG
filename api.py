@@ -693,9 +693,19 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         existing_deal = _find_existing_deal(company_name, crm_name, crm_key)
         previous_scores = _get_previous_scores(company_name)
 
+        # Skip scoring notification if deal is already closed (won or lost)
+        if _is_deal_closed(existing_deal):
+            logger.info(
+                f"[{conn['name']}] Deal for '{company_name}' is already closed "
+                f"({existing_deal.get('stage')}), skipping"
+            )
+            # Still log the scored deal but don't notify
+            _save_scored_deal(score_result, analysis, metadata, deal_id=existing_deal.get("deal_id"))
+            return
+
         deal_id = None
         if existing_deal:
-            # Deal already exists, don't create a duplicate
+            # Deal already exists but not closed, don't create a duplicate
             deal_id = existing_deal.get("deal_id")
             logger.info(
                 f"[{conn['name']}] Existing deal found for '{company_name}': {existing_deal.get('deal_name')} "
@@ -787,11 +797,25 @@ def _get_previous_scores(company_name: str) -> list:
 
 
 def _find_existing_deal(company_name: str, crm_name: str, crm_key: Optional[str] = None) -> Optional[dict]:
-    """Check if a deal already exists in the CRM for this company."""
-    if crm_name != "attio" or not company_name:
+    """Check if a deal already exists in the CRM for this company. Returns deal info including stage."""
+    if not company_name or not crm_name:
         return None
-    import attio_client
-    return attio_client.find_deal_by_company(company_name, api_key=crm_key)
+    try:
+        crm_client = crm_factory.get_client(crm_name)
+        result = crm_client.find_deal_by_company(company_name, api_key=crm_key)
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to check existing deal for '{company_name}' in {crm_name}: {e}")
+        return None
+
+
+def _is_deal_closed(existing_deal: Optional[dict]) -> bool:
+    """Check if an existing deal is in a closed state (won or lost)."""
+    if not existing_deal:
+        return False
+    stage = (existing_deal.get("stage") or "").lower()
+    closed_keywords = ["closed", "won", "lost", "dead", "churned", "abandoned"]
+    return any(kw in stage for kw in closed_keywords)
 
 
 def _send_slack_notification(
@@ -1224,6 +1248,15 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
         # Check for existing deal and previous scores (follow-up intelligence)
         existing_deal = _find_existing_deal(company_name, crm_name, crm_key)
         previous_scores = _get_previous_scores(company_name)
+
+        # Skip if deal is already closed
+        if _is_deal_closed(existing_deal):
+            logger.info(
+                f"[{conn['name']}] Deal for '{company_name}' is already closed "
+                f"({existing_deal.get('stage')}), skipping"
+            )
+            _save_scored_deal(score_result, analysis, metadata, deal_id=existing_deal.get("deal_id"))
+            return
 
         deal_id = None
         if existing_deal:

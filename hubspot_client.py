@@ -397,6 +397,58 @@ KEY SIGNAL: {score_result.get('key_insight', 'N/A')}
     return properties
 
 
+def find_deal_by_company(company_name: str, api_key: Optional[str] = None) -> Optional[dict]:
+    """Find an existing deal in HubSpot by company name. Returns deal info or None."""
+    if not company_name:
+        return None
+    try:
+        data = _hs_request(
+            "POST",
+            "/crm/v3/objects/deals/search",
+            {
+                "filterGroups": [{
+                    "filters": [{
+                        "propertyName": "dealname",
+                        "operator": "CONTAINS_TOKEN",
+                        "value": company_name,
+                    }]
+                }],
+                "properties": ["dealname", "dealstage", "pipeline"],
+                "limit": 1,
+                "sorts": [{"propertyName": "createdate", "direction": "DESCENDING"}],
+            },
+            api_key=api_key,
+        )
+        results = data.get("results", [])
+        if results:
+            deal = results[0]
+            props = deal.get("properties", {})
+            return {
+                "deal_id": deal["id"],
+                "deal_name": props.get("dealname", ""),
+                "stage": props.get("dealstage", ""),
+            }
+    except Exception as e:
+        logger.warning(f"HubSpot deal search failed for '{company_name}': {e}")
+    return None
+
+
+def update_deal_stage(deal_id: str, stage: str, api_key: Optional[str] = None) -> Optional[dict]:
+    """Update a deal's stage in HubSpot."""
+    try:
+        data = _hs_request(
+            "PATCH",
+            f"/crm/v3/objects/deals/{deal_id}",
+            {"properties": {"dealstage": stage}},
+            api_key=api_key,
+        )
+        logger.info(f"Updated HubSpot deal {deal_id} to stage: {stage}")
+        return {"deal_id": deal_id, "stage": stage}
+    except Exception as e:
+        logger.error(f"Failed to update HubSpot deal {deal_id}: {e}")
+        return None
+
+
 def create_deal(
     score_result: dict,
     analysis: dict,
