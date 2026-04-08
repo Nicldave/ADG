@@ -16,7 +16,7 @@ All clients expose the same public interface:
   query_deals_by_stage(stages, limit) -> list[dict]
 """
 
-SUPPORTED_CRMS = ("hubspot", "attio", "salesforce", "pipedrive", "close", "copper", "zoho", "freshsales", "monday", "keap")
+SUPPORTED_CRMS = ("hubspot", "attio", "salesforce", "pipedrive", "close", "copper", "zoho", "freshsales", "monday", "keap", "webhook")
 
 
 def get_client(crm: str = "hubspot"):
@@ -59,6 +59,9 @@ def get_client(crm: str = "hubspot"):
     elif crm == "keap":
         import keap_client
         return keap_client
+    elif crm == "webhook":
+        import webhook_client
+        return webhook_client
     else:
         raise ValueError(
             f"Unsupported CRM: '{crm}'. Choose from: {', '.join(SUPPORTED_CRMS)}"
