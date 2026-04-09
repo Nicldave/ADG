@@ -67,6 +67,10 @@
                         <div class="option-name">Zoom</div>
                         <div class="option-desc">Cloud recordings</div>
                     </div>
+                    <div class="option-card" data-source="google_meet" onclick="selectSource(this)">
+                        <div class="option-name">Google Meet</div>
+                        <div class="option-desc">Google Workspace</div>
+                    </div>
                     <div class="option-card" data-source="manual" onclick="selectSource(this)">
                         <div class="option-name">Manual</div>
                         <div class="option-desc">Upload transcripts</div>
@@ -140,6 +144,21 @@
                                 <li>Click <strong>Create API Key</strong></li>
                                 <li>Copy the <strong>Access Key</strong> and paste it above</li>
                             </ol>
+                        </div>
+                        <div id="help-google_meet" style="display:none;">
+                            <p style="margin-bottom: 8px; color: #666; font-size: 13px;">You'll need Google Workspace admin access.</p>
+                            <ol>
+                                <li>Go to <strong>console.cloud.google.com</strong> and sign in</li>
+                                <li>Create a new project (or use an existing one)</li>
+                                <li>Enable the <strong>Google Drive API</strong> and <strong>Google Docs API</strong></li>
+                                <li>Go to <strong>Credentials > Create Credentials > OAuth 2.0 Client ID</strong></li>
+                                <li>Set application type to <strong>Web application</strong></li>
+                                <li>Add redirect URI: <code>https://web-production-9afb1.up.railway.app/callback/google</code></li>
+                                <li>Generate an <strong>access token</strong> using the OAuth flow</li>
+                                <li>Copy the access token and paste it above</li>
+                            </ol>
+                            <p style="margin-top: 8px; color: #666; font-size: 13px;">Google Meet transcripts are stored in Google Drive. The access token needs Drive read access to pull meeting transcripts.</p>
+                            <p style="margin-top: 8px; font-size: 13px;"><strong>Easier alternative:</strong> Use <strong>Fireflies</strong> instead. It auto-joins Google Meet calls and handles transcription. Just select Fireflies above.</p>
                         </div>
                     </div>
                 </div>
@@ -387,6 +406,12 @@
                     keyLabel.textContent = 'Gong API Access Key';
                     keyHint.textContent = 'Found in Gong Settings > API.';
                     document.getElementById('help-gong').style.display = 'block';
+                    document.getElementById('zoom-oauth-fields').style.display = 'none';
+                } else if (config.source === 'google_meet') {
+                    keyLabel.textContent = 'Google OAuth Access Token';
+                    keyHint.textContent = 'From Google Cloud Console OAuth credentials.';
+                    document.getElementById('help-google_meet').style.display = 'block';
+                    document.getElementById('zoom-oauth-fields').style.display = 'none';
                 }
             }
         }
@@ -466,6 +491,7 @@
                 };
 
                 if (config.source === 'gong') payload.gong_api_key = config.sourceKey;
+                if (config.source === 'google_meet') payload.google_access_token = config.sourceKey;
                 if (config.source === 'zoom') {
                     payload.zoom_webhook_secret = config.sourceKey;
                     payload.zoom_account_id = document.getElementById('zoom-account-id').value.trim();
