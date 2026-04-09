@@ -175,6 +175,7 @@ def analyze_transcript(
     transcript_text: str,
     meeting_metadata: Optional[dict] = None,
     framework: str = "custom",
+    business_context: Optional[dict] = None,
 ) -> dict:
     """
     Analyze a meeting transcript using Claude to extract structured sales intelligence.
@@ -196,6 +197,26 @@ def analyze_transcript(
             f"Duration: {meeting_metadata.get('duration_minutes', 'Unknown')} minutes\n"
             f"Participants: {', '.join(meeting_metadata.get('participants', []))}"
         )
+
+    # Inject business context for calibrated scoring
+    if business_context:
+        biz_parts = []
+        if business_context.get("sale_type"):
+            biz_parts.append(f"Sale type: {business_context['sale_type']}")
+        if business_context.get("deal_value_range"):
+            biz_parts.append(f"Typical deal value: {business_context['deal_value_range']} per month")
+        if business_context.get("avg_days_to_close"):
+            biz_parts.append(f"Average days to close: {business_context['avg_days_to_close']}")
+        if business_context.get("industry_vertical"):
+            biz_parts.append(f"Industry: {business_context['industry_vertical']}")
+        if biz_parts:
+            context_parts.append(
+                "## Business Context\n"
+                "Score this conversation relative to the following business parameters. "
+                "Budget should be evaluated against the typical deal value, not in absolute terms. "
+                "Timeline should be evaluated against the average close cycle, not generic urgency.\n\n"
+                + "\n".join(biz_parts)
+            )
 
     context_parts.append(f"## Transcript\n\n{transcript_text}")
     full_context = "\n\n".join(context_parts)

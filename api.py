@@ -311,6 +311,11 @@ class ConnectionRequest(BaseModel):
     zoom_client_secret: Optional[str] = Field("", description="Zoom Server-to-Server OAuth Client Secret")
     zoom_user_email: Optional[str] = Field("", description="Zoom user email for recording access")
     shadow_mode: bool = Field(False, description="Shadow mode: score calls without writing to CRM")
+    # Business context for scoring calibration
+    sale_type: Optional[str] = Field("", description="Type of sale: saas, services, both, hardware, other")
+    deal_value_range: Optional[str] = Field("", description="Typical deal value: 0-1k, 1k-5k, 5k-25k, 25k+")
+    avg_days_to_close: Optional[str] = Field("", description="Average days to close: 7, 14, 30, 60, 90+")
+    industry_vertical: Optional[str] = Field("", description="Industry or vertical (optional)")
 
 
 class ConnectionResponse(BaseModel):
@@ -381,6 +386,19 @@ def create_connection(req: ConnectionRequest, request: Request):
         google_access_token=req.google_access_token or "",
         shadow_mode=req.shadow_mode,
     )
+    # Store business context and Zoom OAuth fields if provided
+    extra_updates = {}
+    if req.sale_type:
+        extra_updates["sale_type"] = req.sale_type
+    if req.deal_value_range:
+        extra_updates["deal_value_range"] = req.deal_value_range
+    if req.avg_days_to_close:
+        extra_updates["avg_days_to_close"] = req.avg_days_to_close
+    if req.industry_vertical:
+        extra_updates["industry_vertical"] = req.industry_vertical
+    if extra_updates and conn.get("webhook_id"):
+        connections.update_connection(conn["webhook_id"], extra_updates)
+
     # Store Zoom OAuth fields if provided (not in create_connection params, update after)
     if req.zoom_account_id and conn.get("webhook_id"):
         zoom_updates = {
@@ -667,8 +685,14 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             logger.info(f"Transcript {transcript_id} too short ({len(text) if text else 0} chars), attempt {retry_count + 1}/3, will retry")
             return
 
-        # 2. Analyze with Claude
-        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
+        # 2. Analyze with Claude (with business context if available)
+        biz_ctx = {
+            "sale_type": conn.get("sale_type", ""),
+            "deal_value_range": conn.get("deal_value_range", ""),
+            "avg_days_to_close": conn.get("avg_days_to_close", ""),
+            "industry_vertical": conn.get("industry_vertical", ""),
+        } if any(conn.get(k) for k in ("sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical")) else None
+        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx)
 
         if not analysis or not isinstance(analysis, dict):
             logger.warning(f"Transcript {transcript_id} analysis returned invalid result, skipping")
@@ -1230,7 +1254,13 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
             logger.warning(f"[{conn['name']}] Transcript too short ({len(text)} chars), skipping")
             return
 
-        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework)
+        biz_ctx = {
+            "sale_type": conn.get("sale_type", ""),
+            "deal_value_range": conn.get("deal_value_range", ""),
+            "avg_days_to_close": conn.get("avg_days_to_close", ""),
+            "industry_vertical": conn.get("industry_vertical", ""),
+        } if any(conn.get(k) for k in ("sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical")) else None
+        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx)
 
         if not analysis.get("is_sales_conversation"):
             logger.info(f"[{conn['name']}] Not a sales conversation, skipping deal creation")

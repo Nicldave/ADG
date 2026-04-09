@@ -252,6 +252,47 @@
                         <div class="option-desc">Pain signals, buying intent, budget fit</div>
                     </div>
                 </div>
+                <div style="margin-bottom: 20px; padding: 16px; background: #f8f9fa; border-radius: 8px;">
+                    <div style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Business Context (helps calibrate scoring)</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-size: 13px;">Type of Sale</label>
+                            <select id="sale-type">
+                                <option value="">Select...</option>
+                                <option value="saas">SaaS</option>
+                                <option value="services">Services</option>
+                                <option value="both">Both (SaaS + Services)</option>
+                                <option value="hardware">Hardware</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-size: 13px;">Typical Deal Value (per month)</label>
+                            <select id="deal-value">
+                                <option value="">Select...</option>
+                                <option value="0-1k">$0 - $1K</option>
+                                <option value="1k-5k">$1K - $5K</option>
+                                <option value="5k-25k">$5K - $25K</option>
+                                <option value="25k+">$25K+</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-size: 13px;">Average Days to Close</label>
+                            <select id="days-to-close">
+                                <option value="">Select...</option>
+                                <option value="7">~7 days</option>
+                                <option value="14">~14 days</option>
+                                <option value="30">~30 days</option>
+                                <option value="60">~60 days</option>
+                                <option value="90+">90+ days</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-size: 13px;">Industry (optional)</label>
+                            <input type="text" id="industry-vertical" placeholder="e.g. Healthcare, SaaS, Construction">
+                        </div>
+                    </div>
+                </div>
                 <div class="form-group">
                     <label>Slack Notifications (optional)</label>
                     <input type="url" id="slack-webhook" placeholder="https://hooks.slack.com/services/...">
@@ -418,6 +459,10 @@
                     slack_webhook_url: config.slackWebhook,
                     auto_create_threshold: 70,
                     shadow_mode: config.shadowMode,
+                    sale_type: document.getElementById('sale-type').value,
+                    deal_value_range: document.getElementById('deal-value').value,
+                    avg_days_to_close: document.getElementById('days-to-close').value,
+                    industry_vertical: document.getElementById('industry-vertical').value,
                 };
 
                 if (config.source === 'gong') payload.gong_api_key = config.sourceKey;
