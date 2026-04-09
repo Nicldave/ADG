@@ -2486,6 +2486,32 @@ def debug_processed():
     return {"error": "database not available"}
 
 
+@app.post("/debug/clear-old-retries")
+def debug_clear_old_retries():
+    """Mark old retrying transcripts as error so the poller focuses on recent ones."""
+    if database.is_available():
+        conn = database.get_conn()
+        if conn:
+            try:
+                cur = conn.cursor()
+                # Keep transcripts from today, mark everything older as error
+                cur.execute(
+                    "UPDATE processed_transcripts SET status = 'error', error_message = 'Cleared: old retry from credit outage' "
+                    "WHERE status IN ('retrying', 'credits_exhausted') "
+                    "AND processed_at < NOW() - INTERVAL '24 hours'"
+                )
+                cleared = cur.rowcount
+                conn.commit()
+                cur.close()
+                return {"cleared": cleared}
+            except Exception as e:
+                conn.rollback()
+                return {"error": str(e)}
+            finally:
+                database.put_conn(conn)
+    return {"error": "database not available"}
+
+
 # ── Batch scoring ────────────────────────────────────────────────────────────
 
 class BatchScoreRequest(BaseModel):
