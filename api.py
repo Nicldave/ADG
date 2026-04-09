@@ -2498,7 +2498,7 @@ def debug_clear_old_retries():
                 cur.execute(
                     "UPDATE processed_transcripts SET status = 'error', error_message = 'Cleared: old retry from credit outage' "
                     "WHERE status IN ('retrying', 'credits_exhausted') "
-                    "AND processed_at < NOW() - INTERVAL '24 hours'"
+                    "AND processed_at < NOW() - INTERVAL '6 hours'"
                 )
                 cleared = cur.rowcount
                 conn.commit()
