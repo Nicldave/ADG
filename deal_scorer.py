@@ -186,7 +186,20 @@ def _score_framework_categories(analysis: dict, framework_key: str) -> dict:
             evidence = []
             assessment = ""
 
-        score = min(max_pts, max(0, int(raw_score)))
+        # Depth multiplier: more evidence = higher eligible max
+        evidence_count = len(evidence) if isinstance(evidence, list) else 0
+        if evidence_count == 0:
+            depth_ratio = 0.0
+        elif evidence_count == 1:
+            depth_ratio = 0.5
+        elif evidence_count == 2:
+            depth_ratio = 0.75
+        else:
+            depth_ratio = 1.0
+
+        effective_max = int(max_pts * depth_ratio)
+        score = min(effective_max, max(0, int(raw_score)))
+
         notes = []
         if assessment:
             notes.append(assessment)
@@ -197,6 +210,10 @@ def _score_framework_categories(analysis: dict, framework_key: str) -> dict:
         breakdown[key] = {
             "score": score,
             "max": max_pts,
+            "effective_max": effective_max,
+            "depth_ratio": depth_ratio,
+            "evidence_count": evidence_count,
+            "label": cat.get("label", key),
             "notes": notes or ["No evidence provided"],
         }
 

@@ -131,7 +131,7 @@ def _build_framework_output_format(framework_key: str) -> str:
     score_fields = []
     for key, cat in categories.items():
         score_fields.append(
-            f'    "{key}": {{"score": 0-{cat["weight"]}, "evidence": ["verbatim quotes"], "assessment": "one sentence"}}'
+            f'    "{key}": {{"score": 0-{cat["weight"]}, "evidence": ["verbatim quotes - provide 1 if barely mentioned, 2-3 if discussed in moderate depth, 4+ if thoroughly explored with specifics"], "assessment": "one sentence"}}'
         )
     scores_json = ",\n".join(score_fields)
 
@@ -181,6 +181,7 @@ def analyze_transcript(
     meeting_metadata: Optional[dict] = None,
     framework: str = "custom",
     business_context: Optional[dict] = None,
+    company_icp: Optional[str] = None,
 ) -> dict:
     """
     Analyze a meeting transcript using Claude to extract structured sales intelligence.
@@ -223,11 +224,23 @@ def analyze_transcript(
                 + "\n".join(biz_parts)
             )
 
+    # Inject company ICP context if available
+    if company_icp:
+        try:
+            import json as _json
+            from icp_generator import format_icp_for_prompt
+            icp_dict = _json.loads(company_icp) if isinstance(company_icp, str) else company_icp
+            icp_prompt = format_icp_for_prompt(icp_dict)
+            if icp_prompt:
+                context_parts.append(icp_prompt)
+        except Exception as e:
+            logger.warning(f"Failed to inject ICP context: {e}")
+
     context_parts.append(f"## Transcript\n\n{transcript_text}")
     full_context = "\n\n".join(context_parts)
 
     prompt = _build_prompt(framework)
-    logger.info(f"Sending transcript to Claude for analysis (framework: {framework})...")
+    logger.info(f"Sending transcript to Claude for analysis (framework: {framework}, icp: {'yes' if company_icp else 'no'})...")
 
     try:
         message = client.messages.create(

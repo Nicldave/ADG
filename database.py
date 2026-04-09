@@ -196,6 +196,13 @@ def init_db():
                     ALTER TABLE connections ADD COLUMN avg_days_to_close TEXT DEFAULT '';
                     ALTER TABLE connections ADD COLUMN industry_vertical TEXT DEFAULT '';
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'company_website'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN company_website TEXT DEFAULT '';
+                    ALTER TABLE connections ADD COLUMN company_icp TEXT DEFAULT '';
+                END IF;
             END $$;
         """)
         conn.commit()

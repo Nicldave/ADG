@@ -28,6 +28,7 @@ _CONN_FIELDS = [
     "zoom_user_email", "gong_api_key", "gong_api_secret",
     "teams_access_token", "google_access_token", "active", "shadow_mode",
     "sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical",
+    "company_website", "company_icp",
 ]
 
 

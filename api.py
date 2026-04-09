@@ -470,6 +470,46 @@ def delete_connection(webhook_id: str):
     raise HTTPException(status_code=404, detail="Connection not found")
 
 
+class GenerateICPRequest(BaseModel):
+    website_url: str = Field(..., description="Company website URL to scrape")
+
+
+@app.post("/connections/{webhook_id}/generate-icp")
+def generate_icp_endpoint(webhook_id: str, req: GenerateICPRequest):
+    """Scrape website and generate ICP summary for scoring context."""
+    import icp_generator
+
+    conn = connections.get_connection(webhook_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    # Scrape website
+    website_text = icp_generator.scrape_website(req.website_url)
+    if not website_text or len(website_text) < 50:
+        raise HTTPException(status_code=400, detail="Could not scrape enough content from the website")
+
+    # Get business context from connection
+    biz_ctx = {
+        "sale_type": conn.get("sale_type", ""),
+        "deal_value_range": conn.get("deal_value_range", ""),
+        "industry_vertical": conn.get("industry_vertical", ""),
+    }
+
+    # Generate ICP
+    icp = icp_generator.generate_icp(website_text, biz_ctx)
+    if icp.get("error"):
+        raise HTTPException(status_code=500, detail=icp["error"])
+
+    # Store on connection
+    import json as _json
+    connections.update_connection(webhook_id, {
+        "company_website": req.website_url,
+        "company_icp": _json.dumps(icp),
+    })
+
+    return {"icp": icp, "website_url": req.website_url}
+
+
 # ── Helpers: dedup, error alerting, default connection ────────────────────────
 
 def _is_processed(transcript_id: str, connection_name: str = "Default") -> bool:
@@ -692,7 +732,7 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             "avg_days_to_close": conn.get("avg_days_to_close", ""),
             "industry_vertical": conn.get("industry_vertical", ""),
         } if any(conn.get(k) for k in ("sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical")) else None
-        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx)
+        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx, company_icp=conn.get("company_icp"))
 
         if not analysis or not isinstance(analysis, dict):
             logger.warning(f"Transcript {transcript_id} analysis returned invalid result, skipping")
@@ -873,7 +913,12 @@ def _send_slack_notification(
     breakdown_lines = []
     for cat, data in breakdown.items():
         label = data.get("label", cat)
-        score_str = f"{data['score']}/{data['max']}"
+        effective_max = data.get("effective_max", data["max"])
+        depth_note = ""
+        if effective_max < data["max"]:
+            ev_count = data.get("evidence_count", 0)
+            depth_note = f" (depth: {ev_count} signal{'s' if ev_count != 1 else ''}, capped at {effective_max})"
+        score_str = f"{data['score']}/{data['max']}{depth_note}"
         # Get the assessment from the analysis framework_scores
         assessment = ""
         if isinstance(fw_scores.get(cat), dict):
@@ -1267,7 +1312,7 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
             "avg_days_to_close": conn.get("avg_days_to_close", ""),
             "industry_vertical": conn.get("industry_vertical", ""),
         } if any(conn.get(k) for k in ("sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical")) else None
-        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx)
+        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx, company_icp=conn.get("company_icp"))
 
         if not analysis.get("is_sales_conversation"):
             logger.info(f"[{conn['name']}] Not a sales conversation, skipping deal creation")
