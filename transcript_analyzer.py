@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+
+class CreditExhaustedError(Exception):
+    """Raised when Anthropic API credits are exhausted."""
+    pass
+
 # Base prompt used for all frameworks
 BASE_PROMPT = """You are a sales intelligence analyst. Your job is to analyze a sales meeting transcript and extract structured data that determines whether this conversation represents a potential deal.
 
@@ -224,16 +229,23 @@ def analyze_transcript(
     prompt = _build_prompt(framework)
     logger.info(f"Sending transcript to Claude for analysis (framework: {framework})...")
 
-    message = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": f"{prompt}\n\n---\n\n{full_context}",
-            }
-        ],
-    )
+    try:
+        message = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=4096,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"{prompt}\n\n---\n\n{full_context}",
+                }
+            ],
+        )
+    except Exception as api_err:
+        err_str = str(api_err)
+        if "credit balance is too low" in err_str or "insufficient_quota" in err_str:
+            logger.error("Anthropic API credits exhausted. Pausing all scoring until credits are topped up.")
+            raise CreditExhaustedError("Anthropic API credits exhausted") from api_err
+        raise
 
     response_text = message.content[0].text.strip()
 

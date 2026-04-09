@@ -771,6 +771,13 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
                 shadow_mode=is_shadow,
             )
 
+    except transcript_analyzer.CreditExhaustedError:
+        # Credits exhausted: mark as retrying silently, no error alert, no spam
+        conn_name = conn.get("name", "Default")
+        logger.warning(f"[{conn_name}] API credits exhausted, will retry transcript {transcript_id} when credits are available")
+        _mark_processed(transcript_id, conn_name, status="credits_exhausted")
+        return
+
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed for transcript {transcript_id}: {e}")
         # Track retry count. Only mark as permanent error after 3 attempts.
@@ -1321,6 +1328,10 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
                 deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
                 shadow_mode=is_shadow,
             )
+
+    except transcript_analyzer.CreditExhaustedError:
+        logger.warning(f"[{conn.get('name', '?')}] API credits exhausted, skipping silently")
+        return
 
     except Exception as e:
         logger.error(f"[{conn.get('name', '?')}] Pipeline failed: {e}")
@@ -2378,7 +2389,7 @@ def _poll_all_connections():
                 cur = db_conn.cursor()
                 cur.execute(
                     "SELECT transcript_id, connection_name FROM processed_transcripts "
-                    "WHERE status = 'retrying' ORDER BY processed_at ASC LIMIT 3"
+                    "WHERE status IN ('retrying', 'credits_exhausted') ORDER BY processed_at ASC LIMIT 3"
                 )
                 retries = cur.fetchall()
                 cur.close()
