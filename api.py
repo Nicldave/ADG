@@ -734,10 +734,16 @@ def _send_error_alert(error: Exception, context: str, connection_name: str = "De
             reason = "Transcript was too short to analyze (under 500 characters). Likely a very brief call or connection issue."
         elif "rate limit" in err_str.lower() or "429" in err_str:
             reason = "API rate limit hit. Will retry on the next polling cycle."
+        elif "overloaded" in err_str.lower() or "529" in err_str:
+            reason = "AI service is temporarily overloaded. Will retry automatically on the next cycle."
         elif "timeout" in err_str.lower():
             reason = "Request timed out. Will retry on the next polling cycle."
+        elif "credit balance" in err_str.lower() or "insufficient" in err_str.lower():
+            reason = "API credits exhausted. Scoring paused until credits are topped up."
+        elif "invalid_request" in err_str.lower() and "json" in err_str.lower():
+            reason = "AI returned an invalid response. Will retry on the next cycle."
         else:
-            reason = "Unexpected error during processing. Check logs for details."
+            reason = "Unexpected error during processing. Will retry automatically."
 
     title_line = f"Meeting: {meeting_title}\n" if meeting_title else ""
     text = (
