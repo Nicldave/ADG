@@ -82,6 +82,7 @@ class AnalyzeRequest(BaseModel):
     meeting_title: Optional[str] = None
     meeting_date: Optional[str] = None
     demo_mode: bool = Field(False, description="If true, score only. No deal creation, no Slack notification.")
+    demo_email: Optional[str] = Field(None, description="Email to send score results to (demo mode only)")
 
 
 class CreateDealRequest(BaseModel):
@@ -235,6 +236,13 @@ def analyze(req: AnalyzeRequest, request: Request):
             except Exception as e:
                 logger.warning(f"Slack notification failed: {e}")
 
+    # Send score results via email if demo_email provided
+    if req.demo_mode and req.demo_email:
+        try:
+            _send_score_email(req.demo_email, score_result, analysis, req.framework)
+        except Exception as e:
+            logger.warning(f"Failed to send score email to {req.demo_email}: {e}")
+
     return AnalyzeResponse(
         analysis=analysis,
         score_result=score_result,
@@ -244,6 +252,91 @@ def analyze(req: AnalyzeRequest, request: Request):
         framework=req.framework,
         key_insight=score_result.get("key_insight"),
     )
+
+
+def _send_score_email(email: str, score_result: dict, analysis: dict, framework: str):
+    """Send score results to the demo user via Resend."""
+    from config import RESEND_API_KEY
+    import requests as req_lib
+
+    if not RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY not set, skipping score email")
+        return
+
+    score = score_result["total_score"]
+    rec = score_result["recommendation"].replace("_", " ").title()
+    deal_name = score_result.get("deal_name_suggestion", "")
+    company = analysis.get("prospect_company", {}).get("name", "Unknown")
+    fw_name = framework.upper()
+    insight = score_result.get("key_insight", "")
+
+    # Build breakdown text
+    breakdown_lines = []
+    fw_scores = analysis.get("framework_scores", {})
+    for cat, data in score_result.get("breakdown", {}).items():
+        label = data.get("label", cat)
+        assessment = ""
+        if isinstance(fw_scores.get(cat), dict):
+            assessment = fw_scores[cat].get("assessment", "")
+        line = f"<strong>{label}: {data['score']}/{data['max']}</strong>"
+        if assessment:
+            line += f" - {assessment}"
+        breakdown_lines.append(f"<li>{line}</li>")
+
+    color = "#22c55e" if score >= 70 else "#f59e0b" if score >= 50 else "#ef4444"
+    rec_text = "This conversation qualifies as a deal." if score >= 70 else "This conversation needs further review." if score >= 50 else "This conversation does not qualify as a deal."
+
+    html_body = f"""
+    <div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: #0a0a0a; padding: 20px 24px; border-radius: 8px 8px 0 0;">
+            <span style="color: white; font-weight: 700; font-size: 18px;">Fairplay</span>
+        </div>
+        <div style="border: 1px solid #eee; border-top: none; padding: 24px; border-radius: 0 0 8px 8px;">
+            <h2 style="margin: 0 0 4px;">Your Score Results</h2>
+            <p style="color: #888; margin: 0 0 20px;">Framework: {fw_name} | Company: {company}</p>
+
+            <div style="text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px; margin-bottom: 20px;">
+                <span style="font-size: 48px; font-weight: 800; color: {color};">{score}</span>
+                <span style="font-size: 20px; color: #ccc;">/100</span>
+                <div style="margin-top: 8px;">
+                    <span style="display: inline-block; padding: 4px 12px; border-radius: 100px; font-size: 13px; font-weight: 600; background: {color}20; color: {color};">{rec}</span>
+                </div>
+                <p style="color: #666; margin-top: 12px; font-size: 14px;">{rec_text}</p>
+            </div>
+
+            <h3 style="margin: 0 0 12px; font-size: 14px; text-transform: uppercase; color: #888;">Breakdown</h3>
+            <ul style="padding-left: 0; list-style: none; margin: 0 0 20px;">
+                {''.join(breakdown_lines)}
+            </ul>
+
+            {"<p style='font-style: italic; color: #555;'><strong>Key Insight:</strong> " + insight + "</p>" if insight else ""}
+
+            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #888; font-size: 13px;">
+                Want Fairplay scoring your team's calls automatically?
+                <a href="https://fairplay-nicl.netlify.app" style="color: #0a0a0a; font-weight: 600;">Get started</a>
+            </p>
+        </div>
+    </div>"""
+
+    try:
+        resp = req_lib.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            json={
+                "from": "Fairplay <fairplay@nicl.ai>",
+                "to": [email],
+                "subject": f"Your Fairplay Score: {score}/100 ({fw_name})",
+                "html": html_body,
+            },
+            timeout=10,
+        )
+        if resp.status_code in (200, 201):
+            logger.info(f"Score email sent to {email}")
+        else:
+            logger.warning(f"Score email failed: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"Score email request failed: {e}")
 
 
 @app.post("/create-deal", response_model=CreateDealResponse, dependencies=[Depends(require_api_key)])
