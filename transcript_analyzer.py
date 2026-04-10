@@ -22,6 +22,11 @@ class CreditExhaustedError(Exception):
     """Raised when Anthropic API credits are exhausted."""
     pass
 
+
+class TemporaryAPIError(Exception):
+    """Raised when the API is temporarily unavailable (overloaded, rate limited)."""
+    pass
+
 # Base prompt used for all frameworks
 BASE_PROMPT = """You are a sales intelligence analyst. Your job is to analyze a sales meeting transcript and extract structured data that determines whether this conversation represents a potential deal.
 
@@ -258,6 +263,9 @@ def analyze_transcript(
         if "credit balance is too low" in err_str or "insufficient_quota" in err_str:
             logger.error("Anthropic API credits exhausted. Pausing all scoring until credits are topped up.")
             raise CreditExhaustedError("Anthropic API credits exhausted") from api_err
+        if "overloaded" in err_str.lower() or "529" in err_str:
+            logger.warning("Anthropic API overloaded. Will retry next cycle.")
+            raise TemporaryAPIError("Anthropic API temporarily overloaded") from api_err
         raise
 
     response_text = message.content[0].text.strip()

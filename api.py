@@ -911,10 +911,17 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             )
 
     except transcript_analyzer.CreditExhaustedError:
-        # Credits exhausted: mark as retrying silently, no error alert, no spam
+        # Credits exhausted: mark silently, no error alert, no spam
         conn_name = conn.get("name", "Default")
         logger.warning(f"[{conn_name}] API credits exhausted, will retry transcript {transcript_id} when credits are available")
         _mark_processed(transcript_id, conn_name, status="credits_exhausted")
+        return
+
+    except transcript_analyzer.TemporaryAPIError:
+        # API overloaded/rate limited: mark silently, no error alert, retry next cycle
+        conn_name = conn.get("name", "Default")
+        logger.warning(f"[{conn_name}] API temporarily unavailable, will retry transcript {transcript_id} next cycle")
+        # Don't mark as processed, let it retry naturally
         return
 
     except Exception as e:
@@ -1475,6 +1482,10 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
 
     except transcript_analyzer.CreditExhaustedError:
         logger.warning(f"[{conn.get('name', '?')}] API credits exhausted, skipping silently")
+        return
+
+    except transcript_analyzer.TemporaryAPIError:
+        logger.warning(f"[{conn.get('name', '?')}] API temporarily unavailable, skipping silently")
         return
 
     except Exception as e:
