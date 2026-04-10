@@ -328,6 +328,12 @@ def _send_score_email(email: str, score_result: dict, analysis: dict, framework:
                 "to": [email],
                 "subject": f"Your Fairplay Score: {score}/100 ({fw_name})",
                 "html": html_body,
+                "headers": {
+                    "X-Entity-Ref-ID": f"fairplay-demo-{email}",
+                },
+                "tags": [
+                    {"name": "category", "value": "demo_score"},
+                ],
             },
             timeout=10,
         )
@@ -1030,7 +1036,11 @@ def _send_slack_notification(
         if isinstance(fw_scores.get(cat), dict):
             assessment = fw_scores[cat].get("assessment", "")
         if assessment:
-            breakdown_lines.append(f"  {label}: *{score_str}* - {assessment[:100]}")
+            # Truncate at last complete word boundary, not mid-word
+            if len(assessment) > 150:
+                truncated = assessment[:150].rsplit(' ', 1)[0]
+                assessment = truncated
+            breakdown_lines.append(f"  {label}: *{score_str}* - {assessment}")
         else:
             breakdown_lines.append(f"  {label}: *{score_str}*")
     breakdown_block = "\n".join(breakdown_lines) if breakdown_lines else "N/A"
