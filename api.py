@@ -2542,8 +2542,13 @@ def _poll_all_connections():
                     _time.sleep(2)
 
         except Exception as e:
-            logger.error(f"[Poller] Failed polling for {conn_name}: {e}")
-            _send_error_alert(e, f"Polling for connection {conn_name}", conn_name)
+            err_str = str(e).lower()
+            # Suppress Slack alerts for transient third-party API errors
+            if "internal_server_error" in err_str or "500" in err_str or "overloaded" in err_str or "429" in err_str:
+                logger.warning(f"[Poller] Transient API error for {conn_name}, will retry next cycle: {e}")
+            else:
+                logger.error(f"[Poller] Failed polling for {conn_name}: {e}")
+                _send_error_alert(e, f"Polling for connection {conn_name}", conn_name)
 
     # Retry stuck transcripts (retrying status, older than lookback window)
     # Only retry once per cycle, and permanently mark as error if retry fails
