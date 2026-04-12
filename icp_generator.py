@@ -118,19 +118,20 @@ Website content:
 
 
 def format_icp_for_prompt(icp: dict) -> str:
-    """Format the ICP dict into a string for injection into the transcript analysis prompt."""
+    """Format the ICP dict into a string for injection into the transcript analysis prompt.
+    Values are JSON-serialized to escape any prompt injection attempts."""
     if not icp or icp.get("error"):
         return ""
 
     parts = []
     if icp.get("products"):
-        parts.append(f"This company sells: {icp['products']}")
+        parts.append(f"This company sells: {json.dumps(icp['products'])}")
     if icp.get("icp"):
-        parts.append(f"Their ideal customer: {icp['icp']}")
+        parts.append(f"Their ideal customer: {json.dumps(icp['icp'])}")
     if icp.get("deal_characteristics"):
-        parts.append(f"What a real deal looks like: {icp['deal_characteristics']}")
+        parts.append(f"What a real deal looks like: {json.dumps(icp['deal_characteristics'])}")
     if icp.get("not_a_deal"):
-        parts.append(f"What is NOT a deal: {icp['not_a_deal']}")
+        parts.append(f"What is NOT a deal: {json.dumps(icp['not_a_deal'])}")
 
     if not parts:
         return ""

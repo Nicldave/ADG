@@ -1107,6 +1107,11 @@ async def fireflies_webhook_default(request: Request, background_tasks: Backgrou
         logger.warning(f"Fireflies webhook: no transcript ID in payload: {body}")
         return {"status": "ignored", "reason": "no transcript_id in payload"}
 
+    # Idempotency check: skip if already processed to avoid duplicate deals
+    if _is_processed(transcript_id):
+        logger.info(f"Fireflies default webhook: transcript {transcript_id} already processed, skipping")
+        return {"status": "already_processed", "transcript_id": transcript_id}
+
     conn = _build_default_connection()
     logger.info(f"Processing Fireflies transcript {transcript_id} with default keys")
     background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
@@ -1138,6 +1143,12 @@ async def fireflies_webhook(webhook_id: str, request: Request, background_tasks:
     if not transcript_id:
         logger.warning(f"Fireflies webhook received but no transcript ID found in payload: {body}")
         return {"status": "ignored", "reason": "no transcript_id in payload"}
+
+    # Idempotency check: skip if already processed to avoid duplicate deals
+    conn_name = conn.get("name", "Default")
+    if _is_processed(transcript_id, conn_name):
+        logger.info(f"[{conn_name}] Fireflies webhook: transcript {transcript_id} already processed, skipping")
+        return {"status": "already_processed", "transcript_id": transcript_id}
 
     logger.info(f"[{conn['name']}] Fireflies webhook received for transcript {transcript_id}")
     background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
@@ -1592,6 +1603,16 @@ async def zoom_webhook(webhook_id: str, request: Request, background_tasks: Back
 
     event = body.get("event", "")
     if event in ("recording.transcript_completed", "recording.completed"):
+        # Idempotency check: extract recording ID and skip if already processed
+        payload_obj = body.get("payload", {}).get("object", {})
+        recording_id = payload_obj.get("uuid") or payload_obj.get("id", "")
+        if recording_id:
+            zoom_tid = f"zoom_{recording_id}"
+            conn_name = conn.get("name", "Default")
+            if _is_processed(zoom_tid, conn_name):
+                logger.info(f"[{conn_name}] Zoom webhook: recording {recording_id} already processed, skipping")
+                return {"status": "already_processed", "recording_id": recording_id}
+
         logger.info(f"[{conn['name']}] Zoom webhook received: {event}")
         background_tasks.add_task(_process_zoom_recording, body, conn)
         return {"status": "processing"}

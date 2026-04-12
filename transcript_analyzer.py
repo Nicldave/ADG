@@ -56,6 +56,14 @@ Set is_sales_conversation to FALSE if:
 - The company is being sold TO (vendor evaluation, the company is the buyer not the seller)
 - This is a networking, partnership, or referral conversation
 - This is a coaching, mentoring, or advisory session with no sales intent
+
+## Additional Signals to Extract
+When analyzing the conversation, also evaluate:
+- **Engagement quality**: Was the prospect actively engaged (asking questions, sharing details) or passive (short answers, redirecting)? Rate as: high, medium, low.
+- **Deal velocity**: Did the conversation include scheduling next steps, requesting proposals, or other forward momentum? Rate as: accelerating, steady, stalling, none.
+- **Buying committee**: Were multiple stakeholders mentioned or involved? Is there a clear champion? Are there blockers? Summarize the committee status.
+- **Competitive landscape**: Were competitors mentioned? Is the prospect evaluating alternatives? Note any competitive intelligence.
+- **Willingness to change**: Is the prospect actively looking for a solution or content with their current situation? Rate as: actively looking, open to change, resistant, unknown.
 """
 
 # Custom framework keeps the original Ascent-specific pain categories
@@ -122,6 +130,11 @@ Return ONLY valid JSON (no markdown, no commentary) matching this exact structur
     {"name": "string", "title": "string or null", "influence": "champion|evaluator|decision_maker|blocker|unknown", "email": "email address if mentioned, or null"}
   ],
   "competitors_mentioned": ["list of competitor names or services mentioned"],
+  "engagement_quality": "high|medium|low",
+  "deal_velocity": "accelerating|steady|stalling|none",
+  "buying_committee": "summary of stakeholder involvement, champion, blockers - or null if unclear",
+  "competitive_landscape": "summary of competitors mentioned and evaluation status, or null",
+  "willingness_to_change": "actively_looking|open_to_change|resistant|unknown",
   "summary": "2-3 sentence summary of the meeting and its sales significance"
 }
 """
@@ -167,6 +180,11 @@ Return ONLY valid JSON (no markdown, no commentary) matching this exact structur
     {{"action": "what was agreed", "owner": "who owns it", "deadline": "when, or null"}}
   ],
   "competitors_mentioned": ["list of competitor names or services mentioned"],
+  "engagement_quality": "high|medium|low",
+  "deal_velocity": "accelerating|steady|stalling|none",
+  "buying_committee": "summary of stakeholder involvement, champion, blockers - or null if unclear",
+  "competitive_landscape": "summary of competitors mentioned and evaluation status, or null",
+  "willingness_to_change": "actively_looking|open_to_change|resistant|unknown",
   "summary": "2-3 sentence summary of the meeting and its sales significance"
 }}
 """
@@ -210,16 +228,17 @@ def analyze_transcript(
         )
 
     # Inject business context for calibrated scoring
+    # Values are JSON-serialized to escape any prompt injection attempts
     if business_context:
         biz_parts = []
         if business_context.get("sale_type"):
-            biz_parts.append(f"Sale type: {business_context['sale_type']}")
+            biz_parts.append(f"Sale type: {json.dumps(business_context['sale_type'])}")
         if business_context.get("deal_value_range"):
-            biz_parts.append(f"Typical deal value: {business_context['deal_value_range']} per month")
+            biz_parts.append(f"Typical deal value: {json.dumps(business_context['deal_value_range'])} per month")
         if business_context.get("avg_days_to_close"):
-            biz_parts.append(f"Average days to close: {business_context['avg_days_to_close']}")
+            biz_parts.append(f"Average days to close: {json.dumps(str(business_context['avg_days_to_close']))}")
         if business_context.get("industry_vertical"):
-            biz_parts.append(f"Industry: {business_context['industry_vertical']}")
+            biz_parts.append(f"Industry: {json.dumps(business_context['industry_vertical'])}")
         if biz_parts:
             context_parts.append(
                 "## Business Context\n"
