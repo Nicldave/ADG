@@ -336,6 +336,7 @@ def _extract_key_insight(analysis: dict, framework_key: str, breakdown: dict = N
 
     # Categorize each criterion as strong, moderate, or weak based on score percentage
     strong = []
+    moderate = []
     weak = []
     for key, data in breakdown.items():
         label = data.get("label", key).lower()
@@ -344,13 +345,17 @@ def _extract_key_insight(analysis: dict, framework_key: str, breakdown: dict = N
         pct = score / max_score if max_score > 0 else 0
         if pct >= 0.75:
             strong.append(label)
-        elif pct < 0.5:
+        elif pct >= 0.5:
+            moderate.append(label)
+        else:
             weak.append(label)
 
     # Build the summary
     parts = []
     if strong:
         parts.append(f"Strong {', '.join(strong)}")
+    if moderate:
+        parts.append(f"{', '.join(moderate)} discussed but could go deeper")
     if weak:
         parts.append(f"{'but ' if strong else ''}{', '.join(weak)} {'need' if len(weak) > 1 else 'needs'} more clarity")
 
@@ -362,10 +367,11 @@ def _extract_key_insight(analysis: dict, framework_key: str, breakdown: dict = N
     # Add a specific detail from the analysis if available
     detail = ""
     fw_scores = analysis.get("framework_scores", {})
-    # Find the weakest category and pull its assessment for context
-    if weak and fw_scores:
+    # Find the weakest or moderate category and pull its assessment for context
+    target_labels = weak or moderate
+    if target_labels and fw_scores:
         for key, val in fw_scores.items():
-            if isinstance(val, dict) and val.get("label", key).lower() in weak:
+            if isinstance(val, dict) and val.get("label", key).lower() in target_labels:
                 assessment = val.get("assessment", "")
                 if assessment:
                     detail = assessment[:80]
