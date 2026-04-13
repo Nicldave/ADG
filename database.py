@@ -215,6 +215,12 @@ def init_db():
                 ) THEN
                     ALTER TABLE connections ADD COLUMN teams_webhook_url TEXT DEFAULT '';
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'fathom_api_key'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN fathom_api_key TEXT DEFAULT '';
+                END IF;
             END $$;
         """)
         conn.commit()

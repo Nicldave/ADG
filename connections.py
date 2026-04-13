@@ -27,6 +27,7 @@ _CONN_FIELDS = [
     "zoom_webhook_secret", "zoom_account_id", "zoom_client_id", "zoom_client_secret",
     "zoom_user_email", "gong_api_key", "gong_api_secret",
     "teams_access_token", "google_access_token", "active", "shadow_mode", "teams_webhook_url",
+    "fathom_api_key",
     "sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical",
     "company_website", "company_icp", "framework_weights",
 ]
@@ -201,6 +202,7 @@ def list_connections() -> list[dict]:
                 or conn.get("gong_api_key")
                 or conn.get("teams_access_token")
                 or conn.get("google_access_token")
+                or conn.get("fathom_api_key")
             ),
             "crm_connected": bool(conn.get("crm_api_key")),
         }

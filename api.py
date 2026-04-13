@@ -395,7 +395,7 @@ def create_deal(req: CreateDealRequest):
 
 # ── Connection management ────────────────────────────────────────────────────
 
-SUPPORTED_SOURCES = {"fireflies", "zoom", "gong", "teams", "google_meet"}
+SUPPORTED_SOURCES = {"fireflies", "zoom", "gong", "teams", "google_meet", "fathom"}
 
 
 class ConnectionRequest(BaseModel):
@@ -414,6 +414,7 @@ class ConnectionRequest(BaseModel):
     gong_api_secret: Optional[str] = Field("", description="Gong API secret (access key secret)")
     teams_access_token: Optional[str] = Field("", description="Microsoft Graph API access token")
     google_access_token: Optional[str] = Field("", description="Google OAuth access token")
+    fathom_api_key: Optional[str] = Field("", description="Fathom API key")
     zoom_account_id: Optional[str] = Field("", description="Zoom Server-to-Server OAuth Account ID")
     zoom_client_id: Optional[str] = Field("", description="Zoom Server-to-Server OAuth Client ID")
     zoom_client_secret: Optional[str] = Field("", description="Zoom Server-to-Server OAuth Client Secret")
@@ -509,6 +510,8 @@ def create_connection(req: ConnectionRequest, request: Request):
         extra_updates["framework_weights"] = req.framework_weights
     if req.teams_webhook_url:
         extra_updates["teams_webhook_url"] = req.teams_webhook_url
+    if hasattr(req, 'fathom_api_key') and req.fathom_api_key:
+        extra_updates["fathom_api_key"] = req.fathom_api_key
     if extra_updates and conn.get("webhook_id"):
         connections.update_connection(conn["webhook_id"], extra_updates)
 
@@ -941,7 +944,7 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
                 f"({existing_deal.get('stage')}), skipping"
             )
             # Still log the scored deal but don't notify
-            _save_scored_deal(score_result, analysis, metadata, deal_id=existing_deal.get("deal_id"))
+            _save_scored_deal(score_result, analysis, metadata, deal_id=existing_deal.get("deal_id"), connection_name=conn.get("name", ""))
             return
 
         deal_id = None
@@ -973,7 +976,7 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             logger.info(f"[{conn['name']}] Score {score} below threshold {REVIEW_THRESHOLD}, no deal created")
 
         # 4b. Log scored deal
-        _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
+        _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id, connection_name=conn.get("name", ""))
 
         # 4c. Mark transcript as processed
         _mark_processed(transcript_id, conn.get("name", "Default"), score=score, status="success")
@@ -1737,7 +1740,7 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
                 f"[{conn['name']}] Deal for '{company_name}' is already closed "
                 f"({existing_deal.get('stage')}), skipping"
             )
-            _save_scored_deal(score_result, analysis, metadata, deal_id=existing_deal.get("deal_id"))
+            _save_scored_deal(score_result, analysis, metadata, deal_id=existing_deal.get("deal_id"), connection_name=conn.get("name", ""))
             return
 
         deal_id = None
@@ -1763,7 +1766,7 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
         else:
             logger.info(f"[{conn['name']}] Score {score} below threshold {REVIEW_THRESHOLD}, no deal created")
 
-        _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
+        _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id, connection_name=conn.get("name", ""))
 
         _send_notification(
             conn, score_result, analysis, metadata,
@@ -1974,6 +1977,97 @@ async def gong_webhook(webhook_id: str, request: Request, background_tasks: Back
     body = await request.json()
     logger.info(f"[{conn['name']}] Gong webhook received")
     background_tasks.add_task(_process_gong_call, body, conn)
+    return {"status": "processing"}
+
+
+# ── Fathom webhook ────────────────────────────────────────────────────────────
+
+def _process_fathom_recording(body: dict, conn: dict):
+    """
+    Background task: pull Fathom recording transcript via API, analyze, score, create deal.
+    """
+    import requests as req_lib
+
+    try:
+        # Extract recording ID from webhook payload
+        recording_id = body.get("recording_id") or body.get("data", {}).get("recording_id", "")
+        if not recording_id:
+            logger.warning(f"[{conn['name']}] Fathom webhook: no recording_id found")
+            return
+
+        fathom_tid = f"fathom_{recording_id}"
+        conn_name = conn.get("name", "Default")
+        if _is_processed(fathom_tid, conn_name):
+            logger.info(f"[{conn_name}] Fathom recording {recording_id} already processed, skipping")
+            return
+
+        fathom_key = conn.get("fathom_api_key", "")
+        if not fathom_key:
+            logger.warning(f"[{conn['name']}] Fathom API key not configured")
+            return
+
+        # Pull transcript from Fathom API
+        headers = {"X-Api-Key": fathom_key}
+        resp = req_lib.get(
+            f"https://api.fathom.video/external/v1/recordings/{recording_id}/transcript",
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Build text from Fathom transcript format
+        transcript_entries = data if isinstance(data, list) else data.get("transcript", [])
+        lines = []
+        for entry in transcript_entries:
+            speaker_obj = entry.get("speaker", {})
+            speaker = speaker_obj.get("display_name", "Unknown") if isinstance(speaker_obj, dict) else str(speaker_obj)
+            text = entry.get("text", "")
+            if text:
+                lines.append(f"**{speaker}:** {text}")
+
+        text = "\n".join(lines)
+
+        # Get recording metadata
+        meta_resp = req_lib.get(
+            f"https://api.fathom.video/external/v1/recordings/{recording_id}",
+            headers=headers,
+            timeout=15,
+        )
+        rec_data = meta_resp.json() if meta_resp.ok else {}
+
+        metadata = {
+            "title": rec_data.get("title", f"Fathom Recording {recording_id}"),
+            "date": rec_data.get("created_at", datetime.now().isoformat()),
+            "source": "fathom",
+            "participants": [
+                p.get("display_name", "") for p in rec_data.get("participants", [])
+                if isinstance(p, dict)
+            ],
+        }
+
+        # Store fathom transcript ID in metadata for dedup tracking
+        metadata["transcript_id"] = fathom_tid
+        _process_transcript_text(text, metadata, conn)
+
+    except Exception as e:
+        logger.error(f"[{conn['name']}] Fathom processing failed: {e}")
+
+
+@app.post("/webhook/fathom/{webhook_id}")
+async def fathom_webhook(webhook_id: str, request: Request, background_tasks: BackgroundTasks):
+    """
+    Webhook for Fathom. Configure in Fathom:
+    Settings > Integrations > Webhooks > new-meeting-content-ready
+    URL: https://your-domain/webhook/fathom/{webhook_id}
+    """
+    conn = connections.get_connection(webhook_id)
+    if not conn or not conn.get("active"):
+        raise HTTPException(status_code=404, detail="Invalid or inactive webhook")
+
+    body = await request.json()
+    logger.info(f"[{conn['name']}] Fathom webhook received")
+    background_tasks.add_task(_process_fathom_recording, body, conn)
     return {"status": "processing"}
 
 
@@ -2264,7 +2358,7 @@ def list_feedback():
 DEALS_LOG_FILE = Path(__file__).parent / ".deals_log.json"
 
 
-def _save_scored_deal(score_result: dict, analysis: dict, metadata: dict, deal_id: Optional[str] = None):
+def _save_scored_deal(score_result: dict, analysis: dict, metadata: dict, deal_id: Optional[str] = None, connection_name: str = ""):
     """Save a scored deal to the log for history tracking."""
     company_name = analysis.get("prospect_company", {}).get("name", "")
     entry = {
@@ -2278,6 +2372,7 @@ def _save_scored_deal(score_result: dict, analysis: dict, metadata: dict, deal_i
         "key_insight": score_result.get("key_insight", ""),
         "company": company_name,
         "participants": metadata.get("participants", []),
+        "connection_name": connection_name,
         "created_at": datetime.now().isoformat(),
     }
 
@@ -2293,7 +2388,7 @@ def _save_scored_deal(score_result: dict, analysis: dict, metadata: dict, deal_i
                     deal_id, entry["deal_name"], entry["meeting_title"],
                     entry["score"], entry["recommendation"], entry["framework"],
                     json.dumps(entry["breakdown"]), json.dumps({"company": entry["company"]}),
-                    json.dumps({"participants": entry["participants"]}), entry["key_insight"],
+                    json.dumps({"participants": entry["participants"], "connection_name": entry.get("connection_name", "")}), entry["key_insight"],
                     company_name,
                 ),
             )
@@ -2902,6 +2997,26 @@ if POLLING_ENABLED:
             max_instances=1,
         )
 
+        def _daily_health_checks():
+            """Run org health alerts and rapid close detection for all connections."""
+            logger.info("Running daily health checks...")
+            all_conns = connections.list_connections_full()
+            for conn in all_conns:
+                try:
+                    _check_org_health(conn)
+                    _check_rapid_closes(conn)
+                except Exception as e:
+                    logger.warning(f"Health check failed for {conn.get('name', '?')}: {e}")
+            logger.info(f"Daily health checks complete for {len(all_conns)} connection(s)")
+
+        _scheduler.add_job(
+            _daily_health_checks,
+            "interval",
+            hours=24,
+            id="daily_health_checks",
+            max_instances=1,
+        )
+
         @app.on_event("startup")
         def _start_poller():
             _scheduler.start()
@@ -3314,6 +3429,324 @@ def dashboard_stats(user: dict = Depends(require_user)):
         return {"total_scored": 0, "auto_created": 0, "needs_review": 0, "avg_score": 0}
     finally:
         database.put_conn(conn)
+
+
+# ── Org Health Alert ──────────────────────────────────────────────────────────
+
+def _check_org_health(conn: dict):
+    """
+    Check if >15% of recent conversations land in Needs Review for a connection.
+    If so, alert admin via Slack/Teams that framework thresholds may need recalibration.
+    """
+    if not database.is_available():
+        return
+    db = database.get_conn()
+    if not db:
+        return
+    try:
+        cur = db.cursor()
+        # Look at scored deals from the last 30 days for this connection
+        conn_name = conn.get("name", "Default")
+        cur.execute("""
+            SELECT recommendation, COUNT(*)
+            FROM scored_deals
+            WHERE created_at > NOW() - INTERVAL '30 days'
+              AND metadata->>'connection_name' = %s
+            GROUP BY recommendation
+        """, (conn_name,))
+        rows = cur.fetchall()
+        cur.close()
+
+        total = sum(r[1] for r in rows)
+        if total < 10:
+            return  # Not enough data to be meaningful
+
+        review_count = sum(r[1] for r in rows if r[0] == "needs_review")
+        review_pct = (review_count / total) * 100
+
+        if review_pct <= 15:
+            return
+
+        import requests as req_lib
+        alert_msg = (
+            f"{review_count} of {total} conversations ({review_pct:.0f}%) landed in Needs Review "
+            f"over the last 30 days. This may indicate that framework thresholds need recalibration. "
+            f"Consider adjusting the auto-create threshold or framework weights in Settings."
+        )
+
+        slack_url = conn.get("slack_webhook_url")
+        if slack_url:
+            try:
+                req_lib.post(slack_url, json={"text": f":warning: *Fairplay Org Health Alert*\n{alert_msg}"}, timeout=10)
+            except Exception:
+                pass
+
+        teams_url = conn.get("teams_webhook_url")
+        if teams_url:
+            try:
+                req_lib.post(teams_url, json={
+                    "type": "message",
+                    "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "type": "AdaptiveCard", "version": "1.4",
+                        "body": [
+                            {"type": "TextBlock", "text": "Fairplay Org Health Alert", "weight": "bolder", "color": "warning"},
+                            {"type": "TextBlock", "text": alert_msg, "wrap": True},
+                        ],
+                    }}],
+                }, timeout=10)
+            except Exception:
+                pass
+
+        logger.info(f"[{conn_name}] Org health alert: {review_pct:.0f}% needs review ({review_count}/{total})")
+    except Exception as e:
+        logger.warning(f"Org health check failed: {e}")
+    finally:
+        database.put_conn(db)
+
+
+# ── Rapid Close Detection ────────────────────────────────────────────────────
+
+def _check_rapid_closes(conn: dict):
+    """
+    Find deals that Fairplay auto-created but were closed-lost quickly (within 14 days).
+    Alert admin via Slack/Teams so they can calibrate.
+    """
+    if not database.is_available():
+        return
+    db = database.get_conn()
+    if not db:
+        return
+    try:
+        cur = db.cursor()
+        # Find auto-created deals from the last 30 days that have a deal_id
+        cur.execute("""
+            SELECT deal_id, deal_name, company_name, score, created_at
+            FROM scored_deals
+            WHERE recommendation = 'auto_create'
+              AND deal_id IS NOT NULL
+              AND deal_id != ''
+              AND created_at > NOW() - INTERVAL '30 days'
+              AND metadata->>'connection_name' = %s
+        """, (conn.get("name", "Default"),))
+        auto_deals = cur.fetchall()
+        cur.close()
+
+        if not auto_deals:
+            return
+
+        # Check CRM for closed-lost status
+        crm_name = conn.get("crm", "attio")
+        crm_key = conn.get("crm_api_key", "")
+        if not crm_key:
+            return
+
+        try:
+            crm_client = crm_factory.get_client(crm_name)
+            closed_deals = crm_client.query_deals_by_stage(
+                ["closedlost", "lost", "Closed Lost", "Lost"], limit=50, api_key=crm_key
+            )
+        except Exception as e:
+            logger.warning(f"Rapid close CRM check failed: {e}")
+            return
+
+        # Match auto-created deals to closed-lost deals by deal_id or company name
+        closed_ids = {d.get("deal_id") for d in closed_deals}
+        closed_companies = {d.get("company_name", "").lower().strip() for d in closed_deals}
+
+        rapid_closes = []
+        for deal_id, deal_name, company, score, created_at in auto_deals:
+            if deal_id in closed_ids or company.lower().strip() in closed_companies:
+                rapid_closes.append({
+                    "deal_name": deal_name,
+                    "company": company,
+                    "score": score,
+                    "created": str(created_at),
+                })
+
+        if not rapid_closes:
+            return
+
+        import requests as req_lib
+        lines = [f"- {rc['deal_name']} (score: {rc['score']}, company: {rc['company']})" for rc in rapid_closes[:5]]
+        alert_msg = (
+            f"{len(rapid_closes)} deal(s) auto-created by Fairplay were closed-lost quickly:\n"
+            + "\n".join(lines)
+            + "\n\nThis may indicate the scoring threshold is too low or certain deal patterns need different evaluation."
+        )
+
+        slack_url = conn.get("slack_webhook_url")
+        if slack_url:
+            try:
+                req_lib.post(slack_url, json={"text": f":rotating_light: *Fairplay Rapid Close Alert*\n{alert_msg}"}, timeout=10)
+            except Exception:
+                pass
+
+        teams_url = conn.get("teams_webhook_url")
+        if teams_url:
+            try:
+                req_lib.post(teams_url, json={
+                    "type": "message",
+                    "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "type": "AdaptiveCard", "version": "1.4",
+                        "body": [
+                            {"type": "TextBlock", "text": "Fairplay Rapid Close Alert", "weight": "bolder", "color": "attention"},
+                            {"type": "TextBlock", "text": alert_msg, "wrap": True},
+                        ],
+                    }}],
+                }, timeout=10)
+            except Exception:
+                pass
+
+        logger.info(f"[{conn.get('name')}] Rapid close alert: {len(rapid_closes)} deals")
+    except Exception as e:
+        logger.warning(f"Rapid close check failed: {e}")
+    finally:
+        database.put_conn(db)
+
+
+@app.post("/check-health", dependencies=[Depends(require_api_key)])
+def check_health_now():
+    """Manually trigger org health + rapid close checks for all connections."""
+    all_conns = connections.list_connections_full()
+    results = []
+    for conn in all_conns:
+        _check_org_health(conn)
+        _check_rapid_closes(conn)
+        results.append(conn.get("name", "?"))
+    return {"status": "checked", "connections": results}
+
+
+# ── Shadow Mode Gap Report ───────────────────────────────────────────────────
+
+@app.get("/connections/{webhook_id}/gap-report", dependencies=[Depends(require_api_key)])
+def shadow_gap_report(webhook_id: str, days: int = 30):
+    """
+    Shadow mode gap report: compare what Fairplay scored vs what reps actually created.
+    Shows conversations that scored above threshold but have no CRM deal,
+    and CRM deals that Fairplay scored below threshold.
+    """
+    conn = connections.get_connection(webhook_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    if not database.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    conn_name = conn.get("name", "Default")
+    crm_name = conn.get("crm", "attio")
+    crm_key = conn.get("crm_api_key", "")
+    threshold = conn.get("auto_create_threshold", 70)
+
+    # 1. Get all Fairplay-scored deals from the period
+    db = database.get_conn()
+    if not db:
+        raise HTTPException(status_code=503, detail="Database connection failed")
+
+    try:
+        cur = db.cursor()
+        cur.execute("""
+            SELECT deal_name, company_name, score, recommendation, deal_id, key_insight, created_at
+            FROM scored_deals
+            WHERE created_at > NOW() - INTERVAL '%s days'
+            ORDER BY created_at DESC
+        """, (days,))
+        scored = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query failed: {e}")
+    finally:
+        database.put_conn(db)
+
+    scored_deals = [
+        {
+            "deal_name": r[0], "company_name": r[1], "score": r[2],
+            "recommendation": r[3], "deal_id": r[4], "key_insight": r[5],
+            "created_at": str(r[6]),
+        }
+        for r in scored
+    ]
+
+    # 2. Get CRM deals created in the period
+    crm_deals = []
+    if crm_key:
+        try:
+            crm_client = crm_factory.get_client(crm_name)
+            # Pull open deals + recently closed
+            for stages in [["open", "Open", "qualified", "Qualified", "demo", "Demo", "proposal", "Proposal"],
+                           ["closedwon", "Won", "Closed Won"], ["closedlost", "Lost", "Closed Lost"]]:
+                try:
+                    batch = crm_client.query_deals_by_stage(stages, limit=50, api_key=crm_key)
+                    crm_deals.extend(batch)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Gap report CRM pull failed: {e}")
+
+    # 3. Build the gap analysis
+    # Normalize company names for matching
+    def _norm(name):
+        return (name or "").lower().strip().replace(",", "").replace(".", "").replace(" inc", "").replace(" llc", "").replace(" ltd", "")
+
+    crm_companies = {_norm(d.get("company_name", "")): d for d in crm_deals if d.get("company_name")}
+    scored_companies = {_norm(d["company_name"]): d for d in scored_deals if d.get("company_name")}
+
+    # Fairplay would create, but no CRM deal exists (missed by reps)
+    missed_by_reps = []
+    for sd in scored_deals:
+        if sd["score"] >= threshold and sd["recommendation"] in ("auto_create", "needs_review"):
+            norm_name = _norm(sd["company_name"])
+            if norm_name and norm_name not in crm_companies:
+                missed_by_reps.append({
+                    "company": sd["company_name"],
+                    "score": sd["score"],
+                    "recommendation": sd["recommendation"],
+                    "insight": sd["key_insight"],
+                    "date": sd["created_at"],
+                })
+
+    # CRM deals that Fairplay scored low (reps created deals Fairplay wouldn't)
+    inflated_by_reps = []
+    for company_norm, crm_deal in crm_companies.items():
+        if company_norm in scored_companies:
+            sd = scored_companies[company_norm]
+            if sd["score"] < threshold:
+                inflated_by_reps.append({
+                    "company": crm_deal.get("company_name", ""),
+                    "crm_stage": crm_deal.get("stage", "unknown"),
+                    "fairplay_score": sd["score"],
+                    "recommendation": sd["recommendation"],
+                    "insight": sd.get("key_insight", ""),
+                })
+
+    # Summary stats
+    total_scored = len(scored_deals)
+    above_threshold = sum(1 for sd in scored_deals if sd["score"] >= threshold)
+    below_threshold = total_scored - above_threshold
+    needs_review_count = sum(1 for sd in scored_deals if sd["recommendation"] == "needs_review")
+    review_pct = (needs_review_count / total_scored * 100) if total_scored > 0 else 0
+
+    return {
+        "period_days": days,
+        "connection": conn_name,
+        "threshold": threshold,
+        "summary": {
+            "total_conversations_scored": total_scored,
+            "above_threshold": above_threshold,
+            "below_threshold": below_threshold,
+            "needs_review": needs_review_count,
+            "needs_review_pct": round(review_pct, 1),
+            "crm_deals_found": len(crm_deals),
+        },
+        "gaps": {
+            "missed_by_reps": missed_by_reps[:20],
+            "missed_by_reps_count": len(missed_by_reps),
+            "inflated_by_reps": inflated_by_reps[:20],
+            "inflated_by_reps_count": len(inflated_by_reps),
+        },
+        "scored_deals": scored_deals[:50],
+    }
 
 
 # ── Health check ─────────────────────────────────────────────────────────────
