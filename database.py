@@ -203,6 +203,12 @@ def init_db():
                     ALTER TABLE connections ADD COLUMN company_website TEXT DEFAULT '';
                     ALTER TABLE connections ADD COLUMN company_icp TEXT DEFAULT '';
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'framework_weights'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN framework_weights TEXT DEFAULT '';
+                END IF;
             END $$;
         """)
         conn.commit()

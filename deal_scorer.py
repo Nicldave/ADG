@@ -163,13 +163,20 @@ CUSTOM_SCORERS = {
 
 # ── Framework-based scoring (BANT, SPICED, MEDDIC, SPIN) ───────────────────
 
-def _score_framework_categories(analysis: dict, framework_key: str) -> dict:
+def _score_framework_categories(analysis: dict, framework_key: str, custom_weights: dict = None) -> dict:
     """
     Score using Claude-provided framework_scores from the analysis.
     Claude scores each category directly; we cap at the weight max.
+    Optional custom_weights overrides default framework weights.
     """
     fw = get_framework(framework_key)
     categories = fw["categories"]
+    # Apply custom weights if provided (must sum to 100)
+    if custom_weights:
+        for key in categories:
+            if key in custom_weights:
+                categories[key] = dict(categories[key])  # copy to avoid mutating original
+                categories[key]["weight"] = custom_weights[key]
     framework_scores = analysis.get("framework_scores", {})
 
     breakdown = {}
@@ -222,7 +229,7 @@ def _score_framework_categories(analysis: dict, framework_key: str) -> dict:
 
 # ── Main scoring entry point ────────────────────────────────────────────────
 
-def score_deal(analysis: dict) -> dict:
+def score_deal(analysis: dict, custom_weights: dict = None) -> dict:
     """
     Apply the Strike Zone to a transcript analysis. Returns a structured score report.
     Automatically uses the framework stored in the analysis dict.
@@ -255,7 +262,7 @@ def score_deal(analysis: dict) -> dict:
             }
             total += component_score
     else:
-        breakdown = _score_framework_categories(analysis, framework_key)
+        breakdown = _score_framework_categories(analysis, framework_key, custom_weights=custom_weights)
         total = sum(d["score"] for d in breakdown.values())
 
     total = min(100, round(total))

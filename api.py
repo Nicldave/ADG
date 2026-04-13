@@ -415,6 +415,7 @@ class ConnectionRequest(BaseModel):
     deal_value_range: Optional[str] = Field("", description="Typical deal value: 0-1k, 1k-5k, 5k-25k, 25k+")
     avg_days_to_close: Optional[str] = Field("", description="Average days to close: 7, 14, 30, 60, 90+")
     industry_vertical: Optional[str] = Field("", description="Industry or vertical (optional)")
+    framework_weights: Optional[str] = Field("", description="Custom framework weights as JSON, e.g. {\"budget\":30,\"authority\":30,\"need\":25,\"timeline\":15}")
 
 
 class ConnectionResponse(BaseModel):
@@ -495,6 +496,8 @@ def create_connection(req: ConnectionRequest, request: Request):
         extra_updates["avg_days_to_close"] = req.avg_days_to_close
     if req.industry_vertical:
         extra_updates["industry_vertical"] = req.industry_vertical
+    if req.framework_weights:
+        extra_updates["framework_weights"] = req.framework_weights
     if extra_updates and conn.get("webhook_id"):
         connections.update_connection(conn["webhook_id"], extra_updates)
 
@@ -847,8 +850,15 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             logger.info(f"Transcript {transcript_id} is not a sales conversation, skipping deal creation")
             return
 
-        # 3. Score
-        score_result = deal_scorer.score_deal(analysis)
+        # 3. Score (with custom weights if configured)
+        custom_weights = None
+        fw_weights_str = conn.get("framework_weights", "")
+        if fw_weights_str:
+            try:
+                custom_weights = json.loads(fw_weights_str) if isinstance(fw_weights_str, str) else fw_weights_str
+            except Exception:
+                pass
+        score_result = deal_scorer.score_deal(analysis, custom_weights=custom_weights)
         score = score_result["total_score"]
         recommendation = score_result["recommendation"]
         company_name = analysis.get("prospect_company", {}).get("name", "")
@@ -951,7 +961,7 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
 
 
 def _get_previous_scores(company_name: str) -> list:
-    """Look up previous scored calls for a company. Returns list of {score, meeting_title, created_at}."""
+    """Look up previous scored calls for a company. Returns list of {score, meeting_title, created_at, breakdown}."""
     if not company_name or not database.is_available():
         return []
     conn = database.get_conn()
@@ -960,7 +970,7 @@ def _get_previous_scores(company_name: str) -> list:
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT score, meeting_title, deal_id, created_at
+            """SELECT score, meeting_title, deal_id, created_at, breakdown
                FROM scored_deals
                WHERE LOWER(company_name) = LOWER(%s)
                ORDER BY created_at ASC""",
@@ -969,7 +979,8 @@ def _get_previous_scores(company_name: str) -> list:
         rows = cur.fetchall()
         cur.close()
         return [
-            {"score": r[0], "meeting_title": r[1], "deal_id": r[2], "created_at": r[3].isoformat()}
+            {"score": r[0], "meeting_title": r[1], "deal_id": r[2], "created_at": r[3].isoformat(),
+             "breakdown": r[4] if r[4] else {}}
             for r in rows
         ]
     except Exception as e:
@@ -977,6 +988,47 @@ def _get_previous_scores(company_name: str) -> list:
         return []
     finally:
         database.put_conn(conn)
+
+
+def _calculate_cumulative_score(current_breakdown: dict, previous_scores: list) -> dict:
+    """Calculate cumulative deal score by taking the best score per category across all calls."""
+    if not previous_scores:
+        return {"score": sum(d.get("score", 0) for d in current_breakdown.values()), "breakdown": current_breakdown}
+
+    # Collect best score per category across all calls + current
+    best_per_category = {}
+    for cat, data in current_breakdown.items():
+        best_per_category[cat] = {
+            "score": data.get("score", 0),
+            "max": data.get("max", 25),
+            "label": data.get("label", cat),
+            "from_call": "current",
+        }
+
+    for prev in previous_scores:
+        prev_bd = prev.get("breakdown", {})
+        if not isinstance(prev_bd, dict):
+            continue
+        for cat, data in prev_bd.items():
+            if not isinstance(data, dict):
+                continue
+            prev_score = data.get("score", 0)
+            if cat in best_per_category:
+                if prev_score > best_per_category[cat]["score"]:
+                    best_per_category[cat]["score"] = prev_score
+                    best_per_category[cat]["from_call"] = prev.get("meeting_title", "previous call")
+            else:
+                best_per_category[cat] = {
+                    "score": prev_score,
+                    "max": data.get("max", 25),
+                    "label": data.get("label", cat),
+                    "from_call": prev.get("meeting_title", "previous call"),
+                }
+
+    cumulative_total = sum(d["score"] for d in best_per_category.values())
+    cumulative_total = min(100, cumulative_total)
+
+    return {"score": cumulative_total, "breakdown": best_per_category}
 
 
 def _find_existing_deal(company_name: str, crm_name: str, crm_key: Optional[str] = None) -> Optional[dict]:
@@ -1065,12 +1117,21 @@ def _send_slack_notification(
         call_num = len(previous_scores) + 1
         followup_line += f":chart_with_upwards_trend: Call #{call_num} | Score history: {prev_scores_str} > *{score}*\n"
 
+    # Cumulative deal score (best-of per category across all calls)
+    cumulative_line = ""
+    if previous_scores:
+        cumulative = _calculate_cumulative_score(score_result.get("breakdown", {}), previous_scores)
+        cum_score = cumulative["score"]
+        cum_emoji = ":large_green_circle:" if cum_score >= 70 else ":large_yellow_circle:" if cum_score >= 50 else ":red_circle:"
+        cumulative_line = f"{cum_emoji} Deal Score: *{cum_score}/100* (cumulative across {len(previous_scores) + 1} calls)\n"
+
     header = "Fairplay SHADOW" if shadow_mode else "Fairplay"
     text = (
         f"{emoji} *{header}: {title}*\n"
         f"{shadow_line}"
         f"{followup_line}"
         f"Score: *{score}/100* ({framework_name}) | Recommendation: *{rec}*\n"
+        f"{cumulative_line}"
         f"Deal: {deal_name}\n"
         f"Breakdown:\n{breakdown_block}\n"
         f"Insight: _{score_result.get('key_insight', 'N/A')}_\n\n"
@@ -1445,7 +1506,14 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
             logger.info(f"[{conn['name']}] Not a sales conversation, skipping deal creation")
             return
 
-        score_result = deal_scorer.score_deal(analysis)
+        custom_weights = None
+        fw_weights_str = conn.get("framework_weights", "")
+        if fw_weights_str:
+            try:
+                custom_weights = json.loads(fw_weights_str) if isinstance(fw_weights_str, str) else fw_weights_str
+            except Exception:
+                pass
+        score_result = deal_scorer.score_deal(analysis, custom_weights=custom_weights)
         score = score_result["total_score"]
         recommendation = score_result["recommendation"]
         company_name = analysis.get("prospect_company", {}).get("name", "")
