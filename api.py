@@ -841,6 +841,12 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
     Background task: pull transcript from Fireflies, analyze, score, create deal.
     This runs after the webhook returns 200 so Fireflies doesn't timeout.
     """
+    # Double-check dedup (belt and suspenders with the poller-level check)
+    conn_name = conn.get("name", "Default")
+    if _is_processed(transcript_id, conn_name):
+        logger.info(f"[{conn_name}] Transcript {transcript_id} already processed (caught in processor), skipping")
+        return
+
     try:
         ff_key = conn["fireflies_api_key"]
         crm_key = conn["crm_api_key"]
@@ -3757,7 +3763,7 @@ def health():
     from config import FIREFLIES_API_KEY, SLACK_WEBHOOK_URL, DATABASE_URL, POLLING_ENABLED
     return {
         "status": "ok",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "fireflies_configured": bool(FIREFLIES_API_KEY),
         "slack_configured": bool(SLACK_WEBHOOK_URL),
         "database_configured": bool(DATABASE_URL),
