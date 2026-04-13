@@ -209,6 +209,12 @@ def init_db():
                 ) THEN
                     ALTER TABLE connections ADD COLUMN framework_weights TEXT DEFAULT '';
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'teams_webhook_url'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN teams_webhook_url TEXT DEFAULT '';
+                END IF;
             END $$;
         """)
         conn.commit()

@@ -83,6 +83,8 @@ class AnalyzeRequest(BaseModel):
     meeting_date: Optional[str] = None
     demo_mode: bool = Field(False, description="If true, score only. No deal creation, no Slack notification.")
     demo_email: Optional[str] = Field(None, description="Email to send score results to (demo mode only)")
+    company_icp: Optional[str] = Field(None, description="JSON ICP context for scoring (demo mode). Overrides connection ICP.")
+    custom_weights: Optional[dict] = Field(None, description="Custom framework weights, e.g. {\"budget\":30,\"authority\":30,\"need\":25,\"timeline\":15}")
 
 
 class CreateDealRequest(BaseModel):
@@ -191,11 +193,17 @@ def analyze(req: AnalyzeRequest, request: Request):
         "participants": [],
     }
 
+    # In demo mode, pass ICP context and custom weights if provided
+    icp_context = None
+    if req.demo_mode and req.company_icp:
+        icp_context = req.company_icp
+
     try:
         analysis = transcript_analyzer.analyze_transcript(
-            req.transcript, metadata, framework=req.framework
+            req.transcript, metadata, framework=req.framework,
+            company_icp=icp_context,
         )
-        score_result = deal_scorer.score_deal(analysis)
+        score_result = deal_scorer.score_deal(analysis, custom_weights=req.custom_weights)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
@@ -399,6 +407,7 @@ class ConnectionRequest(BaseModel):
     framework: str = Field("custom", description="Scoring framework")
     auto_create_threshold: int = Field(70, description="Score threshold for auto-creating deals")
     slack_webhook_url: Optional[str] = Field("", description="Slack webhook for notifications")
+    teams_webhook_url: Optional[str] = Field("", description="Microsoft Teams webhook for notifications")
     # Source-specific keys
     zoom_webhook_secret: Optional[str] = Field("", description="Zoom webhook secret token")
     gong_api_key: Optional[str] = Field("", description="Gong API key (access key)")
@@ -498,6 +507,8 @@ def create_connection(req: ConnectionRequest, request: Request):
         extra_updates["industry_vertical"] = req.industry_vertical
     if req.framework_weights:
         extra_updates["framework_weights"] = req.framework_weights
+    if req.teams_webhook_url:
+        extra_updates["teams_webhook_url"] = req.teams_webhook_url
     if extra_updates and conn.get("webhook_id"):
         connections.update_connection(conn["webhook_id"], extra_updates)
 
@@ -608,6 +619,41 @@ def generate_icp_endpoint(webhook_id: str, req: GenerateICPRequest):
         "company_website": req.website_url,
         "company_icp": _json.dumps(icp),
     })
+
+    return {"icp": icp, "website_url": req.website_url}
+
+
+@app.get("/demo/frameworks")
+def demo_list_frameworks():
+    """List frameworks with categories/weights for demo page. No auth required."""
+    result = []
+    for key, fw in FRAMEWORKS.items():
+        if key == "custom":
+            continue  # Skip custom for demo
+        result.append({
+            "key": key,
+            "name": fw["name"],
+            "categories": {
+                k: {"weight": v["weight"], "label": v["label"]}
+                for k, v in fw["categories"].items()
+            },
+        })
+    return result
+
+
+@app.post("/demo/generate-icp")
+def demo_generate_icp(req: GenerateICPRequest, request: Request):
+    """Generate ICP from website URL for demo page. No connection required."""
+    _check_rate_limit(request)
+    import icp_generator
+
+    website_text = icp_generator.scrape_website(req.website_url)
+    if not website_text or len(website_text) < 50:
+        raise HTTPException(status_code=400, detail="Could not scrape enough content from the website")
+
+    icp = icp_generator.generate_icp(website_text)
+    if icp.get("error"):
+        raise HTTPException(status_code=500, detail=icp["error"])
 
     return {"icp": icp, "website_url": req.website_url}
 
@@ -815,16 +861,31 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             if retry_count >= 2:
                 # After 3 attempts, mark as no-show and notify
                 _mark_processed(transcript_id, conn_name, status="no_show")
+                import requests as _req
+                no_show_msg = (
+                    f"*No Show* - Call was too short for scoring ({len(text) if text else 0} chars)\n"
+                    f"The call recording had no usable transcript. This usually means the other party didn't show up or there was a connection issue."
+                )
                 slack_url = conn.get("slack_webhook_url")
                 if slack_url:
-                    import requests as _req
-                    no_show_msg = (
-                        f":no_entry: *Fairplay: {title}*\n"
-                        f"*No Show* - Call was too short for scoring ({len(text) if text else 0} chars)\n"
-                        f"_The call recording had no usable transcript. This usually means the other party didn't show up or there was a connection issue._"
-                    )
                     try:
-                        _req.post(slack_url, json={"text": no_show_msg}, timeout=10)
+                        _req.post(slack_url, json={"text": f":no_entry: *Fairplay: {title}*\n{no_show_msg}"}, timeout=10)
+                    except Exception:
+                        pass
+                teams_url = conn.get("teams_webhook_url")
+                if teams_url:
+                    try:
+                        _req.post(teams_url, json={
+                            "type": "message",
+                            "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {
+                                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                                "type": "AdaptiveCard", "version": "1.4",
+                                "body": [
+                                    {"type": "TextBlock", "text": f"Fairplay: {title}", "weight": "bolder"},
+                                    {"type": "TextBlock", "text": no_show_msg, "wrap": True},
+                                ],
+                            }}],
+                        }, timeout=10)
                     except Exception:
                         pass
                 logger.info(f"Transcript {transcript_id} marked as no-show after 3 attempts ({len(text) if text else 0} chars)")
@@ -916,15 +977,12 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         # 4c. Mark transcript as processed
         _mark_processed(transcript_id, conn.get("name", "Default"), score=score, status="success")
 
-        # 5. Slack notification (if configured)
-        is_shadow = conn.get("shadow_mode", False)
-        slack_url = conn.get("slack_webhook_url")
-        if slack_url:
-            _send_slack_notification(
-                slack_url, score_result, analysis, metadata,
-                deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
-                shadow_mode=is_shadow,
-            )
+        # 5. Notifications (Slack and/or Teams)
+        _send_notification(
+            conn, score_result, analysis, metadata,
+            deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
+            shadow_mode=conn.get("shadow_mode", False),
+        )
 
     except transcript_analyzer.CreditExhaustedError:
         # Credits exhausted: mark silently, no error alert, no spam
@@ -1143,6 +1201,152 @@ def _send_slack_notification(
         req_lib.post(webhook_url, json={"text": text}, timeout=10)
     except Exception as e:
         logger.warning(f"Slack notification failed: {e}")
+
+
+def _send_teams_notification(
+    webhook_url: str, score_result: dict, analysis: dict, metadata: dict,
+    deal_id: Optional[str] = None, existing_deal: Optional[dict] = None,
+    previous_scores: Optional[list] = None, shadow_mode: bool = False,
+):
+    """Post a summary to Microsoft Teams via incoming webhook (Adaptive Card)."""
+    import requests as req_lib
+    score = score_result["total_score"]
+    rec = score_result["recommendation"].replace("_", " ").title()
+    deal_name = score_result.get("deal_name_suggestion", "Unknown")
+    title = metadata.get("title", "Unknown Meeting")
+    framework_name = score_result.get("framework", "custom").upper()
+
+    color = "good" if score >= 70 else "warning" if score >= 50 else "attention"
+
+    # Build breakdown text
+    breakdown = score_result.get("breakdown", {})
+    fw_scores = analysis.get("framework_scores", {})
+    breakdown_lines = []
+    for cat, data in breakdown.items():
+        label = data.get("label", cat)
+        effective_max = data.get("effective_max", data["max"])
+        depth_note = ""
+        if effective_max < data["max"]:
+            ev_count = data.get("evidence_count", 0)
+            depth_note = f" (depth: {ev_count} signal{'s' if ev_count != 1 else ''}, capped at {effective_max})"
+        score_str = f"{data['score']}/{data['max']}{depth_note}"
+        assessment = ""
+        if isinstance(fw_scores.get(cat), dict):
+            assessment = fw_scores[cat].get("assessment", "")
+        if assessment:
+            if len(assessment) > 150:
+                assessment = assessment[:150].rsplit(' ', 1)[0]
+            breakdown_lines.append(f"- **{label}:** {score_str} - {assessment}")
+        else:
+            breakdown_lines.append(f"- **{label}:** {score_str}")
+    breakdown_block = "\n".join(breakdown_lines) if breakdown_lines else "N/A"
+
+    # Context lines
+    context_lines = ""
+    if shadow_mode:
+        context_lines += "**SHADOW MODE** (scoring only, no CRM writes)\n\n"
+    if existing_deal:
+        context_lines += f"Follow-up call (existing deal: {existing_deal.get('deal_name', '?')}, stage: {existing_deal.get('stage', '?')})\n\n"
+    if previous_scores:
+        prev_scores_str = " > ".join(str(p["score"]) for p in previous_scores)
+        call_num = len(previous_scores) + 1
+        context_lines += f"Call #{call_num} | Score history: {prev_scores_str} > **{score}**\n\n"
+
+    cumulative_line = ""
+    if previous_scores:
+        cumulative = _calculate_cumulative_score(score_result.get("breakdown", {}), previous_scores)
+        cum_score = cumulative["score"]
+        cumulative_line = f"Deal Score: **{cum_score}/100** (cumulative across {len(previous_scores) + 1} calls)\n\n"
+
+    base_url = _get_base_url()
+    feedback_id = deal_id or deal_name
+
+    # Teams Adaptive Card payload
+    card = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "size": "medium",
+                        "weight": "bolder",
+                        "text": f"Fairplay{'  SHADOW' if shadow_mode else ''}: {title}",
+                    },
+                    {
+                        "type": "ColumnSet",
+                        "columns": [
+                            {
+                                "type": "Column",
+                                "width": "auto",
+                                "items": [{
+                                    "type": "TextBlock",
+                                    "text": f"{score}/100",
+                                    "size": "extraLarge",
+                                    "weight": "bolder",
+                                    "color": color,
+                                }],
+                            },
+                            {
+                                "type": "Column",
+                                "width": "stretch",
+                                "items": [
+                                    {"type": "TextBlock", "text": f"**{rec}** ({framework_name})", "wrap": True},
+                                    {"type": "TextBlock", "text": deal_name, "isSubtle": True, "spacing": "none"},
+                                ],
+                            },
+                        ],
+                    },
+                    {"type": "TextBlock", "text": context_lines + cumulative_line, "wrap": True}
+                    if (context_lines or cumulative_line) else {"type": "TextBlock", "text": ""},
+                    {
+                        "type": "TextBlock",
+                        "text": f"**Breakdown**\n\n{breakdown_block}",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": f"*{score_result.get('key_insight', 'N/A')}*",
+                        "wrap": True,
+                        "isSubtle": True,
+                    },
+                ],
+                "actions": [
+                    {"type": "Action.OpenUrl", "title": "Good Deal", "url": f"{base_url}/feedback/{feedback_id}?vote=good_deal"},
+                    {"type": "Action.OpenUrl", "title": "Not a Deal", "url": f"{base_url}/feedback/{feedback_id}?vote=not_a_deal"},
+                    {"type": "Action.OpenUrl", "title": "Needs Review", "url": f"{base_url}/feedback/{feedback_id}?vote=needs_review"},
+                ],
+            },
+        }],
+    }
+
+    try:
+        req_lib.post(webhook_url, json=card, timeout=10)
+    except Exception as e:
+        logger.warning(f"Teams notification failed: {e}")
+
+
+def _send_notification(
+    conn: dict, score_result: dict, analysis: dict, metadata: dict,
+    deal_id: Optional[str] = None, existing_deal: Optional[dict] = None,
+    previous_scores: Optional[list] = None, shadow_mode: bool = False,
+):
+    """Send notification to Slack and/or Teams based on connection config."""
+    kwargs = dict(
+        score_result=score_result, analysis=analysis, metadata=metadata,
+        deal_id=deal_id, existing_deal=existing_deal,
+        previous_scores=previous_scores, shadow_mode=shadow_mode,
+    )
+    slack_url = conn.get("slack_webhook_url")
+    if slack_url:
+        _send_slack_notification(slack_url, **kwargs)
+    teams_url = conn.get("teams_webhook_url")
+    if teams_url:
+        _send_teams_notification(teams_url, **kwargs)
 
 
 @app.post("/webhook/fireflies")
@@ -1560,14 +1764,11 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
 
         _save_scored_deal(score_result, analysis, metadata, deal_id=deal_id)
 
-        is_shadow = conn.get("shadow_mode", False)
-        slack_url = conn.get("slack_webhook_url")
-        if slack_url:
-            _send_slack_notification(
-                slack_url, score_result, analysis, metadata,
-                deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
-                shadow_mode=is_shadow,
-            )
+        _send_notification(
+            conn, score_result, analysis, metadata,
+            deal_id=deal_id, existing_deal=existing_deal, previous_scores=previous_scores,
+            shadow_mode=conn.get("shadow_mode", False),
+        )
 
     except transcript_analyzer.CreditExhaustedError:
         logger.warning(f"[{conn.get('name', '?')}] API credits exhausted, skipping silently")
