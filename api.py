@@ -667,17 +667,18 @@ def _is_processed(transcript_id: str, connection_name: str = "Default") -> bool:
         if conn:
             try:
                 cur = conn.cursor()
-                # Check by transcript_id only (ignore connection_name) to prevent re-scoring
+                # Check ALL rows for this transcript_id (may exist under multiple connection_names)
                 cur.execute(
                     "SELECT status FROM processed_transcripts WHERE transcript_id = %s",
                     (transcript_id,),
                 )
-                row = cur.fetchone()
+                rows = cur.fetchall()
                 cur.close()
-                if not row:
+                if not rows:
                     return False
-                # Block if any terminal status
-                return row[0] in ("success", "processed", "error", "skipped_short", "no_show")
+                # Block if ANY row has a terminal status (don't re-score successful transcripts)
+                terminal = {"success", "processed", "error", "skipped_short", "no_show"}
+                return any(row[0] in terminal for row in rows)
             except Exception as e:
                 logger.warning(f"Failed to check processed status: {e}")
                 return False
