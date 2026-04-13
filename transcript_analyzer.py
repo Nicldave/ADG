@@ -61,7 +61,7 @@ Set is_sales_conversation to FALSE if:
 When analyzing the conversation, also evaluate:
 - **Engagement quality**: Was the prospect actively engaged (asking questions, sharing details) or passive (short answers, redirecting)? Rate as: high, medium, low.
 - **Deal velocity**: Did the conversation include scheduling next steps, requesting proposals, or other forward momentum? Rate as: accelerating, steady, stalling, none.
-- **Buying committee**: Were multiple stakeholders mentioned or involved? Is there a clear champion? Are there blockers? Summarize the committee status.
+- **Buying committee**: Were multiple stakeholders mentioned or involved? Is there a clear champion? Are there blockers? Summarize the committee status. IMPORTANT: When assessing authority and decision-making power, look beyond explicit titles. Strong authority signals include: the prospect uses "we" language and speaks for the organization, multiple senior people attend the call (shows organizational buy-in), the prospect discusses budget or resources they control, they make commitments without needing to "check with someone", they describe their own decision process, or the entire leadership team is present. In small companies (under 50 people), the person running sales/GTM IS the decision maker. Only flag weak authority if the prospect explicitly defers decisions to others not on the call.
 - **Competitive landscape**: Were competitors mentioned? Is the prospect evaluating alternatives? Note any competitive intelligence.
 - **Willingness to change**: Is the prospect actively looking for a solution or content with their current situation? Rate as: actively looking, open to change, resistant, unknown.
 """
@@ -85,6 +85,14 @@ When identifying pain signals, classify them into these categories (derived from
 
 # Output format for custom framework (original)
 CUSTOM_OUTPUT_FORMAT = """
+## Decision Maker Identification
+When identifying decision_makers, assign influence based on behavior, not just titles:
+- **decision_maker**: Can approve the purchase. Includes founders, CEOs, sole GTM leaders, anyone who controls budget or makes commitments without deferring. In companies under 50 people, the senior person on the call is almost always the decision maker.
+- **champion**: Advocates for the solution internally but needs someone else to sign off.
+- **evaluator**: Gathering information for someone else's decision. Only use this if they explicitly say they're reporting back.
+- **unknown**: Only if you truly cannot determine their role.
+Default to "decision_maker" for senior attendees rather than "unknown". Multiple senior people attending = strong authority signal.
+
 ## Output Format
 Return ONLY valid JSON (no markdown, no commentary) matching this exact structure:
 

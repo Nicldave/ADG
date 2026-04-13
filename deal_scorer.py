@@ -128,6 +128,11 @@ def _score_decision_maker(analysis: dict) -> tuple[float, list[str]]:
         return 2, notes
     influence_map = {"decision_maker": 12, "champion": 9, "evaluator": 5, "unknown": 2, "blocker": 0}
     best_score = max(influence_map.get(dm.get("influence", "unknown"), 2) for dm in dms)
+    # Multiple senior attendees bonus: shows organizational buy-in
+    senior_count = sum(1 for dm in dms if dm.get("influence") in ("decision_maker", "champion"))
+    if senior_count >= 2:
+        best_score = min(15, best_score + 3)
+        notes.append(f"{senior_count} senior stakeholders on call")
     roles = [f"{dm.get('name', '?')} ({dm.get('influence', '?')})" for dm in dms]
     notes.append(f"Decision makers: {', '.join(roles)}")
     return min(15, best_score), notes

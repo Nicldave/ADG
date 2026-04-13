@@ -33,7 +33,7 @@ FRAMEWORKS = {
 Score this conversation against the BANT methodology:
 
 1. **Budget** (25 pts) - Has the prospect discussed budget? Do they have budget allocated? Any price sensitivity?
-2. **Authority** (25 pts) - Is the person on the call the decision maker? Do they need approval from others? What's the buying committee look like?
+2. **Authority** (25 pts) - Is the person on the call the decision maker? Do they need approval from others? What's the buying committee look like? IMPORTANT: Authority is not just about titles. Score authority HIGH if: multiple senior people attend (shows organizational commitment), the prospect speaks for the company ("we decided", "our team"), they discuss budget/resources they control, they make commitments without deferring, or the entire leadership team is present even if titles are not stated. A founder, CEO, or solo GTM leader on a small team IS the decision maker by default. Only score authority LOW if the person explicitly says they need someone else's approval or cannot make decisions.
 3. **Need** (25 pts) - How acute is their need? Is it a nice-to-have or a must-have? What specific problems are they trying to solve?
 4. **Timeline** (25 pts) - Do they have a timeline for making a decision? Is there a trigger event or deadline? How urgent is this?
 
@@ -62,7 +62,7 @@ Score this conversation against the SPICED methodology:
 2. **Pain** (25 pts) - What specific problems are they experiencing? How severe? Who is affected? What have they tried?
 3. **Impact** (20 pts) - What is the business impact of these problems? Revenue loss, wasted time, risk exposure? Can they quantify it?
 4. **Critical Event** (20 pts) - Is there a forcing function? A deadline, board meeting, funding round, audit, departure, or crisis driving urgency?
-5. **Decision** (20 pts) - What does their decision process look like? Who's involved? What criteria matter? Have they evaluated alternatives?
+5. **Decision** (20 pts) - What does their decision process look like? Who's involved? What criteria matter? Have they evaluated alternatives? If the decision maker is on the call and can approve without committees, that scores HIGH. Small teams where the founder/leader runs GTM have short decision processes by default.
 
 For each category, include:
 - "score": 0 to the category max (how well this category was satisfied)
@@ -87,7 +87,7 @@ For each category, include:
 Score this conversation against the MEDDIC methodology:
 
 1. **Metrics** (15 pts) - Can the prospect quantify the impact? Do they have numbers around the problem or desired outcome? Revenue, cost savings, time, headcount?
-2. **Economic Buyer** (20 pts) - Has the economic buyer been identified? Are they on the call? Do we have access to them?
+2. **Economic Buyer** (20 pts) - Has the economic buyer been identified? Are they on the call? Do we have access to them? IMPORTANT: In small companies, the person on the call often IS the economic buyer even without a C-suite title. If they discuss budget, make resource commitments, or speak with authority about organizational decisions, treat them as the economic buyer. Multiple senior attendees signals strong economic buyer access.
 3. **Decision Criteria** (15 pts) - What criteria will they use to evaluate solutions? Technical requirements, ROI threshold, integration needs?
 4. **Decision Process** (15 pts) - What steps do they go through to buy? Legal review, procurement, board approval? What's the typical cycle?
 5. **Identify Pain** (20 pts) - Has a clear, compelling pain been identified? Is it a top-3 priority? Does it have organizational visibility?
