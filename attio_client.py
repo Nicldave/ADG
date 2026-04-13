@@ -403,12 +403,28 @@ def create_deal(
         ATTIO_FIELD_FAIRPLAY_SCORE, ATTIO_FIELD_FRAMEWORK,
         ATTIO_FIELD_SCORED_AT, ATTIO_FIELD_AUTO_CREATED,
         ATTIO_FIELD_CREATION_METHOD, ATTIO_FIELD_BREAKDOWN,
-        ATTIO_FIELD_KEY_INSIGHT,
+        ATTIO_FIELD_KEY_INSIGHT, ATTIO_FIELD_REP_NAME,
+        ATTIO_FIELD_TOUCHPOINTS, ATTIO_FIELD_REVIEW_STATUS,
     )
     breakdown_text = " | ".join(
         f"{d.get('label', k)}: {d['score']}/{d['max']}"
         for k, d in score_result.get("breakdown", {}).items()
     )
+    # Extract rep name from analysis participants
+    rep_name = ""
+    for p in analysis.get("participants", []):
+        if isinstance(p, dict) and p.get("is_prospect") is False and p.get("name"):
+            rep_name = p["name"]
+            break
+    if not rep_name:
+        seller = analysis.get("seller", {})
+        rep_name = seller.get("name", "") if isinstance(seller, dict) else ""
+
+    # Touchpoints: count of previous scores for this company + 1
+    touchpoints = 1
+    if metadata:
+        touchpoints = metadata.get("touchpoints", 1)
+
     fairplay_fields = {
         ATTIO_FIELD_FAIRPLAY_SCORE: [{"value": score_result["total_score"]}],
         ATTIO_FIELD_FRAMEWORK: [{"value": score_result.get("framework", "custom").upper()}],
@@ -417,6 +433,9 @@ def create_deal(
         ATTIO_FIELD_CREATION_METHOD: [{"value": f"Fairplay {recommendation}"}],
         ATTIO_FIELD_KEY_INSIGHT: [{"value": score_result.get("key_insight", "")}],
         ATTIO_FIELD_BREAKDOWN: [{"value": breakdown_text}],
+        ATTIO_FIELD_REP_NAME: [{"value": rep_name}],
+        ATTIO_FIELD_TOUCHPOINTS: [{"value": touchpoints}],
+        ATTIO_FIELD_REVIEW_STATUS: [{"value": recommendation}],
     }
     values.update(fairplay_fields)
 

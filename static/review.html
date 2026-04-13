@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Needs Review - Fairplay</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <style>
+        .review-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 14px;
+            transition: border-color 0.2s;
+        }
+        .review-card:hover { border-color: #d1d5db; }
+        .review-card.resolved { opacity: 0.5; pointer-events: none; }
+        .review-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .review-title { font-weight: 700; font-size: 15px; }
+        .review-company { font-size: 13px; color: #6b7280; }
+        .review-meta { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+        .review-score {
+            font-size: 28px;
+            font-weight: 800;
+            line-height: 1;
+        }
+        .review-insight {
+            font-size: 13px;
+            color: #555;
+            font-style: italic;
+            margin-bottom: 14px;
+            padding: 10px 14px;
+            background: #f9fafb;
+            border-radius: 6px;
+        }
+        .review-breakdown {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        .review-cat {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            background: #f3f4f6;
+        }
+        .review-cat .cat-score { font-weight: 700; }
+        .review-actions {
+            display: flex;
+            gap: 8px;
+            border-top: 1px solid #f3f4f6;
+            padding-top: 14px;
+        }
+        .review-btn {
+            padding: 8px 18px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid;
+            transition: all 0.15s;
+        }
+        .review-btn.approve {
+            background: #ecfdf5;
+            color: #059669;
+            border-color: #a7f3d0;
+        }
+        .review-btn.approve:hover { background: #d1fae5; }
+        .review-btn.reject {
+            background: #fef2f2;
+            color: #dc2626;
+            border-color: #fecaca;
+        }
+        .review-btn.reject:hover { background: #fee2e2; }
+        .review-btn.dismiss {
+            background: #f3f4f6;
+            color: #6b7280;
+            border-color: #e5e7eb;
+        }
+        .review-btn.dismiss:hover { background: #e5e7eb; }
+        .review-result {
+            font-size: 13px;
+            font-weight: 600;
+            padding: 6px 12px;
+            border-radius: 6px;
+            display: inline-block;
+        }
+        .empty-queue {
+            text-align: center;
+            padding: 60px 24px;
+            color: #9ca3af;
+        }
+        .empty-queue h3 { font-size: 18px; color: #374151; margin-bottom: 8px; }
+        .queue-count {
+            font-size: 13px;
+            color: #6b7280;
+            background: #f3f4f6;
+            padding: 2px 10px;
+            border-radius: 100px;
+            margin-left: 8px;
+        }
+        .bulk-actions {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-layout">
+        <nav id="app-nav"></nav>
+        <main class="app-content">
+            <div class="page-header">
+                <div style="display: flex; align-items: center;">
+                    <h1>Needs Review</h1>
+                    <span class="queue-count" id="queue-count">0</span>
+                </div>
+                <p>Borderline conversations that need your call. Approve to create the deal, reject to dismiss.</p>
+            </div>
+
+            <div class="bulk-actions" id="bulk-actions" style="display: none;">
+                <button class="review-btn approve" onclick="bulkAction('approve')">Approve All</button>
+                <button class="review-btn reject" onclick="bulkAction('reject')">Reject All</button>
+            </div>
+
+            <div id="loading" class="card">
+                <div class="empty-queue">Loading review queue...</div>
+            </div>
+
+            <div id="queue"></div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/app.js"></script>
+    <script>
+        let items = [];
+
+        function scoreColor(s) {
+            if (s >= 70) return '#22c55e';
+            if (s >= 50) return '#f59e0b';
+            return '#ef4444';
+        }
+
+        async function loadQueue() {
+            try {
+                items = await API.get('/needs-review?days=60');
+                renderQueue();
+            } catch (e) {
+                document.getElementById('loading').innerHTML = `<div class="empty-queue"><h3>Failed to load</h3><p>${e.message}</p></div>`;
+            }
+        }
+
+        function renderQueue() {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('queue-count').textContent = items.length;
+
+            if (items.length > 1) {
+                document.getElementById('bulk-actions').style.display = 'flex';
+            }
+
+            if (items.length === 0) {
+                document.getElementById('queue').innerHTML = `
+                    <div class="empty-queue">
+                        <h3>Queue is clear</h3>
+                        <p>No conversations are pending review. All scoring decisions have been made.</p>
+                    </div>`;
+                return;
+            }
+
+            let html = '';
+            for (const item of items) {
+                const breakdown = item.breakdown || {};
+                let catHtml = '';
+                for (const [key, val] of Object.entries(breakdown)) {
+                    const pct = val.max > 0 ? (val.score / val.max) * 100 : 0;
+                    const catColor = pct >= 70 ? '#059669' : pct >= 50 ? '#d97706' : '#dc2626';
+                    catHtml += `<span class="review-cat"><span class="cat-score" style="color:${catColor};">${val.score}/${val.max}</span> ${val.label || key}</span>`;
+                }
+
+                html += `
+                <div class="review-card" id="card-${item.id}">
+                    <div class="review-header">
+                        <div>
+                            <div class="review-title">${item.meeting_title || item.deal_name}</div>
+                            <div class="review-company">${item.company_name || 'Unknown Company'}</div>
+                            <div class="review-meta">${item.framework.toUpperCase()} | ${formatDate(item.created_at)}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="review-score" style="color: ${scoreColor(item.score)};">${item.score}</div>
+                            <div style="font-size:12px;color:#9ca3af;">/100</div>
+                        </div>
+                    </div>
+                    ${item.key_insight ? `<div class="review-insight">${item.key_insight}</div>` : ''}
+                    <div class="review-breakdown">${catHtml}</div>
+                    <div class="review-actions" id="actions-${item.id}">
+                        <button class="review-btn approve" onclick="resolve(${item.id}, 'approve')">Approve (Create Deal)</button>
+                        <button class="review-btn reject" onclick="resolve(${item.id}, 'reject')">Not a Deal</button>
+                        <button class="review-btn dismiss" onclick="resolve(${item.id}, 'dismiss')">Dismiss</button>
+                    </div>
+                </div>`;
+            }
+            document.getElementById('queue').innerHTML = html;
+        }
+
+        async function resolve(id, action) {
+            const card = document.getElementById('card-' + id);
+            const actionsEl = document.getElementById('actions-' + id);
+
+            try {
+                const result = await API.post(`/needs-review/${id}/resolve?action=${action}`);
+                const labels = { approve: 'Approved', reject: 'Rejected', dismiss: 'Dismissed' };
+                const colors = { approve: '#ecfdf5;color:#059669', reject: '#fef2f2;color:#dc2626', dismiss: '#f3f4f6;color:#6b7280' };
+                actionsEl.innerHTML = `<span class="review-result" style="background:${colors[action]};">${labels[action]}: ${result.deal_name}</span>`;
+                card.classList.add('resolved');
+
+                // Update count
+                const remaining = document.querySelectorAll('.review-card:not(.resolved)').length;
+                document.getElementById('queue-count').textContent = remaining;
+                if (remaining <= 1) {
+                    document.getElementById('bulk-actions').style.display = 'none';
+                }
+            } catch (e) {
+                alert('Failed: ' + e.message);
+            }
+        }
+
+        async function bulkAction(action) {
+            if (!confirm(`${action === 'approve' ? 'Approve' : 'Reject'} all ${items.length} items?`)) return;
+
+            for (const item of items) {
+                const card = document.getElementById('card-' + item.id);
+                if (card && !card.classList.contains('resolved')) {
+                    await resolve(item.id, action);
+                }
+            }
+        }
+
+        initApp().then(() => loadQueue());
+    </script>
+</body>
+</html>

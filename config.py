@@ -54,6 +54,9 @@ ATTIO_FIELD_AUTO_CREATED = os.getenv("ATTIO_FIELD_AUTO_CREATED", "fairplay_auto_
 ATTIO_FIELD_CREATION_METHOD = os.getenv("ATTIO_FIELD_CREATION_METHOD", "fairplay_creation_method")
 ATTIO_FIELD_BREAKDOWN = os.getenv("ATTIO_FIELD_BREAKDOWN", "fairplay_breakdown")
 ATTIO_FIELD_KEY_INSIGHT = os.getenv("ATTIO_FIELD_KEY_INSIGHT", "fairplay_key_insight")
+ATTIO_FIELD_REP_NAME = os.getenv("ATTIO_FIELD_REP_NAME", "fairplay_rep_name")
+ATTIO_FIELD_TOUCHPOINTS = os.getenv("ATTIO_FIELD_TOUCHPOINTS", "fairplay_touchpoints")
+ATTIO_FIELD_REVIEW_STATUS = os.getenv("ATTIO_FIELD_REVIEW_STATUS", "fairplay_review_status")
 
 # Claude model for transcript analysis
 CLAUDE_MODEL = "claude-sonnet-4-20250514"

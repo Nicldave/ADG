@@ -358,11 +358,21 @@ def _build_deal_properties(
     framework_name = score_result.get("framework", "custom").upper()
     recording_url = metadata.get("recording_url", "") if metadata else ""
 
-    description = f"""AUTO DEAL GENERATOR | Score: {score_result['total_score']}/100 ({framework_name})
+    # Extract rep name
+    rep_name = ""
+    for p in analysis.get("participants", []):
+        if isinstance(p, dict) and p.get("is_prospect") is False and p.get("name"):
+            rep_name = p["name"]
+            break
+    touchpoints = metadata.get("touchpoints", 1) if metadata else 1
+
+    description = f"""FAIRPLAY | Score: {score_result['total_score']}/100 ({framework_name})
+Recommendation: {recommendation.replace('_', ' ').title()}
+Auto-Created: Yes | Rep: {rep_name or 'Unknown'} | Touchpoints: {touchpoints}
 
 MEETING: {metadata.get('title', '?') if metadata else '?'}
 DATE: {metadata.get('date', '?') if metadata else '?'}
-SOURCE: Auto Deal Generator
+SOURCE: Fairplay
 {f'RECORDING: {recording_url}' if recording_url else ''}
 SUMMARY: {analysis.get('summary', '')}
 

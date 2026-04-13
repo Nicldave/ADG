@@ -964,6 +964,7 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         elif score >= REVIEW_THRESHOLD:
             # No existing deal, score meets threshold
             is_shadow = conn.get("shadow_mode", False)
+            metadata["touchpoints"] = len(previous_scores) + 1
             crm_client = crm_factory.get_client(crm_name)
             result = crm_client.create_deal(
                 score_result, analysis, metadata, dry_run=is_shadow, api_key=crm_key
@@ -1758,6 +1759,7 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
             )
         elif score >= REVIEW_THRESHOLD:
             is_shadow = conn.get("shadow_mode", False)
+            metadata["touchpoints"] = len(previous_scores) + 1
             crm_client = crm_factory.get_client(crm_name)
             result = crm_client.create_deal(
                 score_result, analysis, metadata, dry_run=is_shadow, api_key=crm_key
@@ -3753,6 +3755,367 @@ def shadow_gap_report(webhook_id: str, days: int = 30):
         },
         "scored_deals": scored_deals[:50],
     }
+
+
+# ── Shadow Mode Report (deliverable) ──────────────────────────────────────────
+
+@app.post("/connections/{webhook_id}/shadow-report", dependencies=[Depends(require_api_key)])
+def generate_shadow_report(webhook_id: str, days: int = 30):
+    """
+    Generate and email a formatted shadow mode report.
+    Compares Fairplay scores vs CRM reality over the period.
+    Returns the report data and sends it via email to the connection owner.
+    """
+    # Reuse the gap report data
+    report = shadow_gap_report(webhook_id, days)
+
+    conn = connections.get_connection(webhook_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    s = report["summary"]
+    gaps = report["gaps"]
+    conn_name = conn.get("name", "Default")
+
+    # Build HTML report
+    missed_rows = ""
+    for m in gaps["missed_by_reps"][:10]:
+        color = "#22c55e" if m["score"] >= 70 else "#f59e0b" if m["score"] >= 50 else "#ef4444"
+        missed_rows += f"""<tr>
+            <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;font-weight:600;">{m['company']}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;"><span style="color:{color};font-weight:700;">{m['score']}</span>/100</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;font-size:13px;color:#666;">{m.get('insight', '')[:80]}</td>
+        </tr>"""
+
+    inflated_rows = ""
+    for i in gaps["inflated_by_reps"][:10]:
+        color = "#22c55e" if i["fairplay_score"] >= 70 else "#f59e0b" if i["fairplay_score"] >= 50 else "#ef4444"
+        inflated_rows += f"""<tr>
+            <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;font-weight:600;">{i['company']}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;">{i['crm_stage']}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;"><span style="color:{color};font-weight:700;">{i['fairplay_score']}</span>/100</td>
+        </tr>"""
+
+    base_url = _get_base_url()
+
+    html_body = f"""
+    <div style="font-family: Inter, -apple-system, sans-serif; max-width: 640px; margin: 0 auto;">
+        <div style="background: #0a0a0a; padding: 20px 24px; border-radius: 8px 8px 0 0;">
+            <span style="color: white; font-weight: 700; font-size: 18px;">Fairplay Shadow Mode Report</span>
+            <span style="color: #888; font-size: 13px; margin-left: 12px;">{conn_name} | Last {days} days</span>
+        </div>
+        <div style="border: 1px solid #eee; border-top: none; padding: 24px; border-radius: 0 0 8px 8px;">
+
+            <div style="display:flex;gap:16px;margin-bottom:24px;">
+                <div style="flex:1;background:#f9fafb;border-radius:8px;padding:16px;text-align:center;">
+                    <div style="font-size:28px;font-weight:800;">{s['total_conversations_scored']}</div>
+                    <div style="font-size:12px;color:#6b7280;">Conversations Scored</div>
+                </div>
+                <div style="flex:1;background:#ecfdf5;border-radius:8px;padding:16px;text-align:center;">
+                    <div style="font-size:28px;font-weight:800;color:#059669;">{s['above_threshold']}</div>
+                    <div style="font-size:12px;color:#6b7280;">Above Threshold</div>
+                </div>
+                <div style="flex:1;background:#fef2f2;border-radius:8px;padding:16px;text-align:center;">
+                    <div style="font-size:28px;font-weight:800;color:#dc2626;">{s['below_threshold']}</div>
+                    <div style="font-size:12px;color:#6b7280;">Below Threshold</div>
+                </div>
+            </div>
+
+            <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:14px;margin-bottom:24px;">
+                <strong>Pipeline Review Summary:</strong> {s['needs_review_pct']}% of conversations landed in Needs Review.
+                {gaps['missed_by_reps_count']} conversation(s) scored as deals but have no CRM record.
+                {gaps['inflated_by_reps_count']} CRM deal(s) scored below Fairplay's threshold.
+            </div>
+
+            {"<h3 style='margin:0 0 8px;font-size:15px;'>Missed by Reps (" + str(gaps['missed_by_reps_count']) + ")</h3><p style=font-size:13px;color:#6b7280;margin:0 0 12px;>Conversations that scored above threshold but have no deal in the CRM.</p><table style=width:100%;border-collapse:collapse;font-size:14px;><tr style=background:#f9fafb;><th style=text-align:left;padding:8px 12px;font-size:11px;color:#9ca3af;>Company</th><th style=text-align:left;padding:8px 12px;font-size:11px;color:#9ca3af;>Score</th><th style=text-align:left;padding:8px 12px;font-size:11px;color:#9ca3af;>Insight</th></tr>" + missed_rows + "</table><br>" if missed_rows else ""}
+
+            {"<h3 style='margin:0 0 8px;font-size:15px;'>Inflated by Reps (" + str(gaps['inflated_by_reps_count']) + ")</h3><p style=font-size:13px;color:#6b7280;margin:0 0 12px;>CRM deals that Fairplay scored below threshold.</p><table style=width:100%;border-collapse:collapse;font-size:14px;><tr style=background:#f9fafb;><th style=text-align:left;padding:8px 12px;font-size:11px;color:#9ca3af;>Company</th><th style=text-align:left;padding:8px 12px;font-size:11px;color:#9ca3af;>CRM Stage</th><th style=text-align:left;padding:8px 12px;font-size:11px;color:#9ca3af;>Fairplay Score</th></tr>" + inflated_rows + "</table><br>" if inflated_rows else ""}
+
+            <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
+            <p style="font-size:13px;color:#888;">
+                <a href="{base_url}/static/gap-report.html" style="color:#0a0a0a;font-weight:600;">View full interactive report</a> |
+                This report was generated by Fairplay for your shadow mode pipeline review.
+            </p>
+        </div>
+    </div>"""
+
+    # Send via email if we can find the owner
+    email_sent = False
+    owner_email = _get_connection_owner_email(webhook_id)
+    if owner_email:
+        try:
+            from config import RESEND_API_KEY
+            import requests as req_lib
+            if RESEND_API_KEY:
+                resp = req_lib.post(
+                    "https://api.resend.com/emails",
+                    headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                    json={
+                        "from": "Fairplay <fairplay@nicl.ai>",
+                        "to": [owner_email],
+                        "subject": f"Fairplay Shadow Mode Report: {s['total_conversations_scored']} conversations scored ({conn_name})",
+                        "html": html_body,
+                        "tags": [{"name": "category", "value": "shadow_report"}],
+                    },
+                    timeout=10,
+                )
+                email_sent = resp.status_code in (200, 201)
+                if email_sent:
+                    logger.info(f"Shadow report sent to {owner_email}")
+        except Exception as e:
+            logger.warning(f"Shadow report email failed: {e}")
+
+    return {
+        "report": report,
+        "email_sent": email_sent,
+        "email_to": owner_email,
+        "html_preview": html_body,
+    }
+
+
+def _get_connection_owner_email(webhook_id: str) -> Optional[str]:
+    """Get the email of the connection owner from users table."""
+    if not database.is_available():
+        return None
+    db = database.get_conn()
+    if not db:
+        return None
+    try:
+        cur = db.cursor()
+        cur.execute(
+            """SELECT u.email FROM connections c
+               JOIN users u ON c.user_id = u.id
+               WHERE c.webhook_id = %s""",
+            (webhook_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+    finally:
+        database.put_conn(db)
+
+
+# ── Warm Start (retroactive scoring) ─────────────────────────────────────────
+
+@app.post("/connections/{webhook_id}/warm-start", dependencies=[Depends(require_api_key)])
+def warm_start(webhook_id: str, count: int = 20):
+    """
+    Warm Start onboarding: retroactively score recent transcripts.
+    Pulls the most recent transcripts from the configured source and scores them
+    without creating CRM deals. Returns a summary report for calibration.
+    """
+    conn = connections.get_connection(webhook_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    source = conn.get("transcript_source", "fireflies")
+    results = []
+
+    if source == "fireflies":
+        ff_key = conn.get("fireflies_api_key", "")
+        if not ff_key:
+            raise HTTPException(status_code=400, detail="Fireflies API key not configured")
+
+        transcripts = fireflies_client.list_transcripts(
+            since=90, limit=min(count, 50), api_key=ff_key
+        )
+
+        framework = conn.get("framework", "custom")
+        biz_ctx = {
+            "sale_type": conn.get("sale_type", ""),
+            "deal_value_range": conn.get("deal_value_range", ""),
+            "avg_days_to_close": conn.get("avg_days_to_close", ""),
+            "industry_vertical": conn.get("industry_vertical", ""),
+        } if any(conn.get(k) for k in ("sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical")) else None
+
+        custom_weights = None
+        fw_weights_str = conn.get("framework_weights", "")
+        if fw_weights_str:
+            try:
+                custom_weights = json.loads(fw_weights_str) if isinstance(fw_weights_str, str) else fw_weights_str
+            except Exception:
+                pass
+
+        for t in transcripts:
+            tid = t.get("id")
+            if not tid:
+                continue
+            try:
+                transcript = fireflies_client.get_transcript(tid, api_key=ff_key)
+                if not transcript:
+                    continue
+                text = fireflies_client.format_transcript_text(transcript)
+                if not text or len(text) < 500:
+                    continue
+                metadata = fireflies_client.get_meeting_metadata(transcript) if transcript else {}
+
+                analysis = transcript_analyzer.analyze_transcript(
+                    text, metadata, framework=framework,
+                    business_context=biz_ctx, company_icp=conn.get("company_icp"),
+                )
+                score_result = deal_scorer.score_deal(analysis, custom_weights=custom_weights)
+
+                results.append({
+                    "transcript_id": tid,
+                    "title": metadata.get("title", "Unknown"),
+                    "date": metadata.get("date", ""),
+                    "company": analysis.get("prospect_company", {}).get("name", "Unknown"),
+                    "score": score_result["total_score"],
+                    "recommendation": score_result["recommendation"],
+                    "framework": framework,
+                    "key_insight": score_result.get("key_insight", ""),
+                    "is_sales": analysis.get("is_sales_conversation", False),
+                    "meeting_type": analysis.get("meeting_type", "other"),
+                })
+
+                # Save to scored_deals for history (but no CRM writes)
+                _save_scored_deal(score_result, analysis, metadata, connection_name=conn.get("name", ""))
+
+            except transcript_analyzer.CreditExhaustedError:
+                logger.warning("Warm start stopped: API credits exhausted")
+                break
+            except Exception as e:
+                logger.warning(f"Warm start: failed to score transcript {tid}: {e}")
+                continue
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Warm start not yet supported for source: {source}. Currently supports Fireflies.")
+
+    # Summary stats
+    sales_count = sum(1 for r in results if r["is_sales"])
+    above_threshold = sum(1 for r in results if r["score"] >= conn.get("auto_create_threshold", 70))
+    avg_score = sum(r["score"] for r in results) / len(results) if results else 0
+
+    return {
+        "scored": len(results),
+        "sales_conversations": sales_count,
+        "non_sales": len(results) - sales_count,
+        "above_threshold": above_threshold,
+        "below_threshold": len(results) - above_threshold,
+        "avg_score": round(avg_score, 1),
+        "results": results,
+    }
+
+
+# ── Needs Review Queue ────────────────────────────────────────────────────────
+
+@app.get("/needs-review", dependencies=[Depends(require_api_key)])
+def get_needs_review(days: int = 30):
+    """Get all conversations in Needs Review status for the review queue."""
+    if not database.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = database.get_conn()
+    if not db:
+        raise HTTPException(status_code=503, detail="Database connection failed")
+
+    try:
+        cur = db.cursor()
+        cur.execute("""
+            SELECT id, deal_id, deal_name, meeting_title, score, recommendation,
+                   framework, breakdown, key_insight, company_name, created_at
+            FROM scored_deals
+            WHERE recommendation = 'needs_review'
+              AND created_at > NOW() - INTERVAL '%s days'
+            ORDER BY created_at DESC
+        """, (days,))
+        rows = cur.fetchall()
+        cur.close()
+
+        return [{
+            "id": r[0],
+            "deal_id": r[1],
+            "deal_name": r[2],
+            "meeting_title": r[3],
+            "score": r[4],
+            "recommendation": r[5],
+            "framework": r[6],
+            "breakdown": r[7] if isinstance(r[7], dict) else {},
+            "key_insight": r[8],
+            "company_name": r[9],
+            "created_at": str(r[10]),
+        } for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query failed: {e}")
+    finally:
+        database.put_conn(db)
+
+
+@app.post("/needs-review/{deal_db_id}/resolve", dependencies=[Depends(require_api_key)])
+def resolve_needs_review(deal_db_id: int, action: str = "approve"):
+    """
+    Resolve a Needs Review item. Actions: approve, reject, dismiss.
+    - approve: updates recommendation to auto_create, creates deal in CRM if connection is live
+    - reject: updates recommendation to not_a_deal
+    - dismiss: updates recommendation to dismissed
+    """
+    if action not in ("approve", "reject", "dismiss"):
+        raise HTTPException(status_code=400, detail="Action must be: approve, reject, or dismiss")
+
+    if not database.is_available():
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    db = database.get_conn()
+    if not db:
+        raise HTTPException(status_code=503, detail="Database connection failed")
+
+    try:
+        cur = db.cursor()
+        new_rec = {"approve": "auto_create", "reject": "not_a_deal", "dismiss": "dismissed"}[action]
+
+        cur.execute(
+            "UPDATE scored_deals SET recommendation = %s WHERE id = %s AND recommendation = 'needs_review' RETURNING deal_name, score, company_name",
+            (new_rec, deal_db_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Needs Review item not found or already resolved")
+        db.commit()
+        cur.close()
+
+        deal_name, score, company_name = row
+
+        # Log feedback
+        _save_feedback(str(deal_db_id), action, f"Resolved from Needs Review queue")
+
+        return {
+            "id": deal_db_id,
+            "action": action,
+            "new_recommendation": new_rec,
+            "deal_name": deal_name,
+            "company_name": company_name,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to resolve: {e}")
+    finally:
+        database.put_conn(db)
+
+
+def _save_feedback(deal_id: str, vote: str, note: str = ""):
+    """Save feedback to the feedback table."""
+    if not database.is_available():
+        return
+    db = database.get_conn()
+    if not db:
+        return
+    try:
+        cur = db.cursor()
+        cur.execute(
+            "INSERT INTO feedback (deal_id, vote, note) VALUES (%s, %s, %s)",
+            (deal_id, vote, note),
+        )
+        db.commit()
+        cur.close()
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Failed to save feedback: {e}")
+    finally:
+        database.put_conn(db)
 
 
 # ── Health check ─────────────────────────────────────────────────────────────
