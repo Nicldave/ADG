@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipeline Gap Report - Fairplay</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <style>
+        .gap-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .gap-stat {
+            background: #f9fafb;
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+        }
+        .gap-stat .value {
+            font-size: 28px;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+        .gap-stat .label {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+        .gap-section {
+            margin-bottom: 32px;
+        }
+        .gap-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .gap-section-header h3 {
+            font-size: 16px;
+            font-weight: 700;
+        }
+        .gap-count {
+            font-size: 13px;
+            color: #6b7280;
+            background: #f3f4f6;
+            padding: 2px 10px;
+            border-radius: 100px;
+        }
+        .gap-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        .gap-table th {
+            text-align: left;
+            font-size: 11px;
+            font-weight: 600;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 8px 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .gap-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #f3f4f6;
+        }
+        .gap-table tr:hover td { background: #f9fafb; }
+        .score-pill {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 100px;
+            font-weight: 600;
+            font-size: 13px;
+        }
+        .score-pill.green { background: #ecfdf5; color: #059669; }
+        .score-pill.yellow { background: #fffbeb; color: #d97706; }
+        .score-pill.red { background: #fef2f2; color: #dc2626; }
+        .rec-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .rec-badge.auto_create { background: #ecfdf5; color: #059669; }
+        .rec-badge.needs_review { background: #fffbeb; color: #d97706; }
+        .rec-badge.not_a_deal { background: #fef2f2; color: #dc2626; }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #9ca3af;
+            font-size: 14px;
+        }
+        .period-selector {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .period-btn {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            color: #374151;
+        }
+        .period-btn.active {
+            background: #0a0a0a;
+            color: #fff;
+            border-color: #0a0a0a;
+        }
+        .insight-text {
+            font-size: 13px;
+            color: #6b7280;
+            max-width: 280px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .review-pct {
+            font-size: 13px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-weight: 600;
+        }
+        .review-pct.healthy { background: #ecfdf5; color: #059669; }
+        .review-pct.warning { background: #fffbeb; color: #d97706; }
+        .review-pct.danger { background: #fef2f2; color: #dc2626; }
+    </style>
+</head>
+<body>
+    <div class="app-layout">
+        <nav id="app-nav"></nav>
+        <main class="app-content">
+            <div class="page-header">
+                <h1>Pipeline Gap Report</h1>
+                <p>What Fairplay scored vs. what your reps created. The deal creation audit.</p>
+            </div>
+
+            <div class="card" style="margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                    <div class="period-selector">
+                        <span style="font-size: 13px; color: #6b7280;">Period:</span>
+                        <button class="period-btn active" onclick="loadReport(7, this)">7 days</button>
+                        <button class="period-btn" onclick="loadReport(14, this)">14 days</button>
+                        <button class="period-btn" onclick="loadReport(30, this)">30 days</button>
+                        <button class="period-btn" onclick="loadReport(90, this)">90 days</button>
+                    </div>
+                    <div id="review-health"></div>
+                </div>
+            </div>
+
+            <div id="loading" class="card">
+                <div class="empty-state">Loading gap report...</div>
+            </div>
+
+            <div id="report" style="display: none;">
+                <div class="gap-stats" id="stats-grid"></div>
+
+                <div class="gap-section">
+                    <div class="gap-section-header">
+                        <h3>Missed by Reps</h3>
+                        <span class="gap-count" id="missed-count">0</span>
+                    </div>
+                    <p style="font-size: 13px; color: #6b7280; margin-bottom: 12px;">Conversations that scored above your threshold but have no deal in the CRM. These are pipeline gaps your reps missed.</p>
+                    <div class="card" style="padding: 0; overflow: hidden;">
+                        <div id="missed-table"></div>
+                    </div>
+                </div>
+
+                <div class="gap-section">
+                    <div class="gap-section-header">
+                        <h3>Inflated by Reps</h3>
+                        <span class="gap-count" id="inflated-count">0</span>
+                    </div>
+                    <p style="font-size: 13px; color: #6b7280; margin-bottom: 12px;">CRM deals that Fairplay scored below threshold. These may be optimistic entries inflating your pipeline.</p>
+                    <div class="card" style="padding: 0; overflow: hidden;">
+                        <div id="inflated-table"></div>
+                    </div>
+                </div>
+
+                <div class="gap-section">
+                    <div class="gap-section-header">
+                        <h3>All Scored Conversations</h3>
+                        <span class="gap-count" id="all-count">0</span>
+                    </div>
+                    <div class="card" style="padding: 0; overflow: hidden;">
+                        <div id="all-table"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/app.js"></script>
+    <script>
+        let webhookId = null;
+
+        function scorePill(score) {
+            const cls = score >= 70 ? 'green' : score >= 50 ? 'yellow' : 'red';
+            return `<span class="score-pill ${cls}">${score}</span>`;
+        }
+
+        function recBadge(rec) {
+            const labels = { auto_create: 'Deal Created', needs_review: 'Needs Review', not_a_deal: 'Not a Deal' };
+            return `<span class="rec-badge ${rec}">${labels[rec] || rec}</span>`;
+        }
+
+        async function loadReport(days, btnEl) {
+            // Update active button
+            if (btnEl) {
+                document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+                btnEl.classList.add('active');
+            }
+
+            if (!webhookId) {
+                // Get first connection's webhook_id
+                try {
+                    const conns = await API.getConnections();
+                    if (conns && conns.length > 0) {
+                        webhookId = conns[0].webhook_id;
+                    }
+                } catch (e) {
+                    document.getElementById('loading').innerHTML = '<div class="empty-state">Failed to load connections</div>';
+                    return;
+                }
+            }
+
+            if (!webhookId) {
+                document.getElementById('loading').innerHTML = '<div class="empty-state">No connections found. Set up a connection first.</div>';
+                return;
+            }
+
+            try {
+                const data = await API.get(`/connections/${webhookId}/gap-report?days=${days}`);
+                renderReport(data);
+            } catch (e) {
+                document.getElementById('loading').innerHTML = `<div class="empty-state">Failed to load report: ${e.message}</div>`;
+            }
+        }
+
+        function renderReport(data) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('report').style.display = 'block';
+
+            const s = data.summary;
+
+            // Review health indicator
+            const reviewEl = document.getElementById('review-health');
+            const pctCls = s.needs_review_pct > 15 ? 'danger' : s.needs_review_pct > 10 ? 'warning' : 'healthy';
+            reviewEl.innerHTML = `<span class="review-pct ${pctCls}">${s.needs_review_pct}% in review</span>`;
+
+            // Stats grid
+            document.getElementById('stats-grid').innerHTML = `
+                <div class="gap-stat">
+                    <div class="value">${s.total_conversations_scored}</div>
+                    <div class="label">Conversations Scored</div>
+                </div>
+                <div class="gap-stat">
+                    <div class="value" style="color: #059669;">${s.above_threshold}</div>
+                    <div class="label">Above Threshold</div>
+                </div>
+                <div class="gap-stat">
+                    <div class="value" style="color: #dc2626;">${s.below_threshold}</div>
+                    <div class="label">Below Threshold</div>
+                </div>
+                <div class="gap-stat">
+                    <div class="value">${s.crm_deals_found}</div>
+                    <div class="label">CRM Deals Found</div>
+                </div>
+                <div class="gap-stat">
+                    <div class="value" style="color: #d97706;">${data.gaps.missed_by_reps_count}</div>
+                    <div class="label">Missed by Reps</div>
+                </div>
+                <div class="gap-stat">
+                    <div class="value" style="color: #dc2626;">${data.gaps.inflated_by_reps_count}</div>
+                    <div class="label">Inflated by Reps</div>
+                </div>
+            `;
+
+            // Missed by reps table
+            document.getElementById('missed-count').textContent = data.gaps.missed_by_reps_count;
+            const missed = data.gaps.missed_by_reps;
+            if (missed.length === 0) {
+                document.getElementById('missed-table').innerHTML = '<div class="empty-state">No gaps found. Reps are creating deals for all qualifying conversations.</div>';
+            } else {
+                let html = `<table class="gap-table">
+                    <thead><tr><th>Company</th><th>Score</th><th>Status</th><th>Insight</th><th>Date</th></tr></thead><tbody>`;
+                for (const m of missed) {
+                    html += `<tr>
+                        <td style="font-weight:600;">${m.company}</td>
+                        <td>${scorePill(m.score)}</td>
+                        <td>${recBadge(m.recommendation)}</td>
+                        <td class="insight-text">${m.insight || ''}</td>
+                        <td style="white-space:nowrap;color:#6b7280;">${formatDate(m.date)}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                document.getElementById('missed-table').innerHTML = html;
+            }
+
+            // Inflated by reps table
+            document.getElementById('inflated-count').textContent = data.gaps.inflated_by_reps_count;
+            const inflated = data.gaps.inflated_by_reps;
+            if (inflated.length === 0) {
+                document.getElementById('inflated-table').innerHTML = '<div class="empty-state">No inflated deals found. Pipeline looks clean.</div>';
+            } else {
+                let html = `<table class="gap-table">
+                    <thead><tr><th>Company</th><th>CRM Stage</th><th>Fairplay Score</th><th>Recommendation</th><th>Insight</th></tr></thead><tbody>`;
+                for (const i of inflated) {
+                    html += `<tr>
+                        <td style="font-weight:600;">${i.company}</td>
+                        <td>${i.crm_stage}</td>
+                        <td>${scorePill(i.fairplay_score)}</td>
+                        <td>${recBadge(i.recommendation)}</td>
+                        <td class="insight-text">${i.insight || ''}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                document.getElementById('inflated-table').innerHTML = html;
+            }
+
+            // All scored conversations
+            document.getElementById('all-count').textContent = data.scored_deals.length;
+            const all = data.scored_deals;
+            if (all.length === 0) {
+                document.getElementById('all-table').innerHTML = '<div class="empty-state">No scored conversations in this period.</div>';
+            } else {
+                let html = `<table class="gap-table">
+                    <thead><tr><th>Deal</th><th>Company</th><th>Score</th><th>Status</th><th>Insight</th><th>Date</th></tr></thead><tbody>`;
+                for (const d of all) {
+                    html += `<tr>
+                        <td style="font-weight:500;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.deal_name}</td>
+                        <td>${d.company_name || ''}</td>
+                        <td>${scorePill(d.score)}</td>
+                        <td>${recBadge(d.recommendation)}</td>
+                        <td class="insight-text">${d.key_insight || ''}</td>
+                        <td style="white-space:nowrap;color:#6b7280;">${formatDate(d.created_at)}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                document.getElementById('all-table').innerHTML = html;
+            }
+        }
+
+        // Init
+        initApp().then(() => loadReport(7));
+    </script>
+</body>
+</html>
