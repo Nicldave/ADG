@@ -857,8 +857,16 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         # 1. Pull transcript from Fireflies
         transcript = fireflies_client.get_transcript(transcript_id, api_key=ff_key)
         if not transcript:
-            logger.info(f"Transcript {transcript_id} not ready yet (None response), will retry next cycle")
-            return  # Don't mark as processed, let next poll retry
+            conn_name = conn.get("name", "Default")
+            retry_count = _get_retry_count(transcript_id, conn_name)
+            if retry_count >= 2:
+                # After 3 attempts with no transcript, silently mark as error. No notification.
+                _mark_processed(transcript_id, conn_name, status="error", error="Transcript empty after 3 attempts")
+                logger.info(f"Transcript {transcript_id} still empty after 3 attempts, marking as error (no alert)")
+            else:
+                _increment_retry(transcript_id, conn_name)
+                logger.info(f"Transcript {transcript_id} not ready yet (None), attempt {retry_count + 1}/3, will retry")
+            return
 
         text = fireflies_client.format_transcript_text(transcript)
         metadata = fireflies_client.get_meeting_metadata(transcript) if transcript else {}
