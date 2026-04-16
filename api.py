@@ -4134,7 +4134,7 @@ def health():
     from config import FIREFLIES_API_KEY, SLACK_WEBHOOK_URL, DATABASE_URL, POLLING_ENABLED
     return {
         "status": "ok",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "fireflies_configured": bool(FIREFLIES_API_KEY),
         "slack_configured": bool(SLACK_WEBHOOK_URL),
         "database_configured": bool(DATABASE_URL),
