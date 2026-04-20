@@ -2946,7 +2946,13 @@ def _poll_all_connections():
         except Exception as e:
             err_str = str(e).lower()
             # Suppress Slack alerts for transient third-party API errors
-            if "internal_server_error" in err_str or "500" in err_str or "overloaded" in err_str or "429" in err_str:
+            transient_keywords = [
+                "internal_server_error", "500", "overloaded", "429",
+                "request_timeout", "408", "timed out", "timeout",
+                "connection reset", "connection refused", "service unavailable", "503",
+                "bad gateway", "502", "gateway timeout", "504",
+            ]
+            if any(kw in err_str for kw in transient_keywords):
                 logger.warning(f"[Poller] Transient API error for {conn_name}, will retry next cycle: {e}")
             else:
                 logger.error(f"[Poller] Failed polling for {conn_name}: {e}")
