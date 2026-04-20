@@ -1212,8 +1212,8 @@ def _send_slack_notification(
         f"Deal: {deal_name}\n"
         f"Breakdown:\n{breakdown_block}\n"
         f"Insight: _{score_result.get('key_insight', 'N/A')}_\n\n"
-        f":thumbsup: <{base_url}/feedback/{feedback_id}?vote=good_deal|Good Deal>  "
-        f":thumbsdown: <{base_url}/feedback/{feedback_id}?vote=not_a_deal|Not a Deal>  "
+        f":white_check_mark: <{base_url}/feedback/{feedback_id}?vote=good_deal|Good Deal>  "
+        f":x: <{base_url}/feedback/{feedback_id}?vote=not_a_deal|Not a Deal>  "
         f":arrows_counterclockwise: <{base_url}/feedback/{feedback_id}?vote=needs_review|Needs Review>"
     )
     try:
