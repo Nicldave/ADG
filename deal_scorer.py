@@ -374,12 +374,21 @@ def _extract_key_insight(analysis: dict, framework_key: str, breakdown: dict = N
             if isinstance(val, dict) and val.get("label", key).lower() in target_labels:
                 assessment = val.get("assessment", "")
                 if assessment:
-                    detail = assessment[:80]
+                    # Cap detail at 140 chars, at a word boundary
+                    if len(assessment) > 140:
+                        detail = assessment[:140].rsplit(' ', 1)[0] + "..."
+                    else:
+                        detail = assessment
                     break
 
+    # Final cap at 300, at word boundary
     if detail:
-        return f"{insight}. {detail}"[:200]
-    return insight[:200]
+        combined = f"{insight}. {detail}"
+    else:
+        combined = insight
+    if len(combined) > 300:
+        combined = combined[:300].rsplit(' ', 1)[0] + "..."
+    return combined
 
 
 def format_score_report(score_result: dict) -> str:
