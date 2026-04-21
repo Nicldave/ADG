@@ -3147,7 +3147,9 @@ def debug_fireflies_recent(connection_name: str = "My Team", days: int = 3):
         return {"error": "No Fireflies API key on this connection"}
 
     try:
-        transcripts = fireflies_client.list_transcripts(since=days, limit=50, api_key=ff_key)
+        from datetime import timedelta
+        since_dt = datetime.now() - timedelta(days=days)
+        transcripts = fireflies_client.list_transcripts(since=since_dt, limit=50, api_key=ff_key)
         return {
             "count": len(transcripts),
             "transcripts": [
