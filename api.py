@@ -3130,6 +3130,78 @@ def debug_processed():
     return {"error": "database not available"}
 
 
+@app.get("/debug/fireflies-recent")
+def debug_fireflies_recent(connection_name: str = "My Team", days: int = 3):
+    """List recent Fireflies transcripts with titles to help find specific calls."""
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    ff_key = conn.get("fireflies_api_key", "")
+    if not ff_key:
+        return {"error": "No Fireflies API key on this connection"}
+
+    try:
+        transcripts = fireflies_client.list_transcripts(since=days, limit=50, api_key=ff_key)
+        return {
+            "count": len(transcripts),
+            "transcripts": [
+                {
+                    "id": t.get("id"),
+                    "title": t.get("title", ""),
+                    "date": t.get("date", ""),
+                    "duration": t.get("duration", 0),
+                }
+                for t in transcripts
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/debug/force-process/{transcript_id}")
+def debug_force_process(transcript_id: str, connection_name: str = "My Team", background_tasks: BackgroundTasks = None):
+    """Force process a specific transcript by ID, bypassing dedup."""
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    # Clear any existing processed_transcripts row for this transcript+connection
+    if database.is_available():
+        db_conn = database.get_conn()
+        if db_conn:
+            try:
+                cur = db_conn.cursor()
+                cur.execute(
+                    "DELETE FROM processed_transcripts WHERE transcript_id = %s",
+                    (transcript_id,),
+                )
+                db_conn.commit()
+                cur.close()
+            except Exception:
+                db_conn.rollback()
+            finally:
+                database.put_conn(db_conn)
+
+    # Process in background
+    if background_tasks:
+        background_tasks.add_task(_process_fireflies_transcript, transcript_id, conn)
+        return {"status": "processing", "transcript_id": transcript_id, "connection": connection_name}
+    else:
+        _process_fireflies_transcript(transcript_id, conn)
+        return {"status": "processed", "transcript_id": transcript_id}
+
+
 @app.post("/debug/clear-old-retries")
 def debug_clear_old_retries():
     """Mark old retrying transcripts as error so the poller focuses on recent ones."""
