@@ -1203,8 +1203,19 @@ def _send_slack_notification(
         cumulative_line = f"{cum_emoji} Deal Score: *{cum_score}/100* (cumulative across {len(previous_scores) + 1} calls)\n"
 
     header = "Fairplay SHADOW" if shadow_mode else "Fairplay"
+
+    # Meeting type label (helps users filter follow-ups, client meetings, etc.)
+    meeting_type = analysis.get("meeting_type", "")
+    type_labels = {
+        "discovery": "Discovery", "demo": "Demo", "follow_up": "Follow-up",
+        "negotiation": "Negotiation", "internal": "Internal", "recruiting": "Recruiting",
+        "vendor_eval": "Vendor Eval", "partner": "Partner",
+    }
+    type_label = type_labels.get(meeting_type, "")
+    type_badge = f" _[{type_label}]_" if type_label else ""
+
     text = (
-        f"{emoji} *{header}: {title}*\n"
+        f"{emoji} *{header}: {title}*{type_badge}\n"
         f"{shadow_line}"
         f"{followup_line}"
         f"Score: *{score}/100* ({framework_name}) | Recommendation: *{rec}*\n"
@@ -1212,9 +1223,13 @@ def _send_slack_notification(
         f"Deal: {deal_name}\n"
         f"Breakdown:\n{breakdown_block}\n"
         f"Insight: _{score_result.get('key_insight', 'N/A')}_\n\n"
+        f"*Was this a deal?*  "
         f":white_check_mark: <{base_url}/feedback/{feedback_id}?vote=good_deal|Good Deal>  "
         f":x: <{base_url}/feedback/{feedback_id}?vote=not_a_deal|Not a Deal>  "
-        f":arrows_counterclockwise: <{base_url}/feedback/{feedback_id}?vote=needs_review|Needs Review>"
+        f":arrows_counterclockwise: <{base_url}/feedback/{feedback_id}?vote=needs_review|Needs Review>\n"
+        f"*How was the assessment?*  "
+        f":+1: <{base_url}/feedback/{feedback_id}?vote=assessment_good|Accurate>  "
+        f":-1: <{base_url}/feedback/{feedback_id}?vote=assessment_bad|Off the mark>"
     )
     try:
         req_lib.post(webhook_url, json={"text": text}, timeout=10)
@@ -1280,6 +1295,16 @@ def _send_teams_notification(
     base_url = _get_base_url()
     feedback_id = deal_id or deal_name
 
+    # Meeting type label
+    meeting_type = analysis.get("meeting_type", "")
+    type_labels = {
+        "discovery": "Discovery", "demo": "Demo", "follow_up": "Follow-up",
+        "negotiation": "Negotiation", "internal": "Internal", "recruiting": "Recruiting",
+        "vendor_eval": "Vendor Eval", "partner": "Partner",
+    }
+    type_label = type_labels.get(meeting_type, "")
+    type_suffix = f"  [{type_label}]" if type_label else ""
+
     # Teams Adaptive Card payload
     card = {
         "type": "message",
@@ -1294,7 +1319,7 @@ def _send_teams_notification(
                         "type": "TextBlock",
                         "size": "medium",
                         "weight": "bolder",
-                        "text": f"Fairplay{'  SHADOW' if shadow_mode else ''}: {title}",
+                        "text": f"Fairplay{'  SHADOW' if shadow_mode else ''}: {title}{type_suffix}",
                     },
                     {
                         "type": "ColumnSet",
@@ -1338,6 +1363,8 @@ def _send_teams_notification(
                     {"type": "Action.OpenUrl", "title": "Good Deal", "url": f"{base_url}/feedback/{feedback_id}?vote=good_deal"},
                     {"type": "Action.OpenUrl", "title": "Not a Deal", "url": f"{base_url}/feedback/{feedback_id}?vote=not_a_deal"},
                     {"type": "Action.OpenUrl", "title": "Needs Review", "url": f"{base_url}/feedback/{feedback_id}?vote=needs_review"},
+                    {"type": "Action.OpenUrl", "title": "Assessment: Accurate", "url": f"{base_url}/feedback/{feedback_id}?vote=assessment_good"},
+                    {"type": "Action.OpenUrl", "title": "Assessment: Off", "url": f"{base_url}/feedback/{feedback_id}?vote=assessment_bad"},
                 ],
             },
         }],
@@ -2316,14 +2343,20 @@ def _save_feedback(entry: dict):
 def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
     """
     Record feedback on a deal assessment and update the deal in Attio.
-    Called from Slack notification links.
+    Called from Slack/Teams notification links.
 
-    Actions:
+    Deal-quality votes (change Attio deal stage):
       - good_deal: Confirms the deal. No stage change.
       - not_a_deal: Moves deal to "Lost" in Attio.
       - needs_review: Moves deal to "Discovery Scheduled" in Attio.
+
+    Assessment-quality votes (feedback on Fairplay itself, no CRM changes):
+      - assessment_good: Fairplay's scoring was accurate.
+      - assessment_bad: Fairplay's scoring was off the mark.
     """
-    valid_votes = {"good_deal", "not_a_deal", "needs_review"}
+    deal_votes = {"good_deal", "not_a_deal", "needs_review"}
+    assessment_votes = {"assessment_good", "assessment_bad"}
+    valid_votes = deal_votes | assessment_votes
     if vote not in valid_votes:
         vote = "not_a_deal"
 
@@ -2337,20 +2370,33 @@ def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
 
     logger.info(f"Feedback received: {deal_id} = {vote}")
 
-    # Update deal stage in Attio based on feedback
-    import attio_client
     action_taken = "Feedback logged."
-    if vote == "not_a_deal":
-        result = attio_client.update_deal_stage(deal_id, "Lost")
-        action_taken = "Deal moved to Lost." if result else "Could not update deal stage."
-    elif vote == "needs_review":
-        from config import ATTIO_DEAL_STAGE_REVIEW
-        result = attio_client.update_deal_stage(deal_id, ATTIO_DEAL_STAGE_REVIEW)
-        action_taken = f"Deal moved to {ATTIO_DEAL_STAGE_REVIEW}." if result else "Could not update deal stage."
-    elif vote == "good_deal":
-        action_taken = "Deal confirmed. No changes made."
+    if vote in deal_votes:
+        # Deal-quality feedback: update Attio stage
+        import attio_client
+        if vote == "not_a_deal":
+            result = attio_client.update_deal_stage(deal_id, "Lost")
+            action_taken = "Deal moved to Lost." if result else "Could not update deal stage."
+        elif vote == "needs_review":
+            from config import ATTIO_DEAL_STAGE_REVIEW
+            result = attio_client.update_deal_stage(deal_id, ATTIO_DEAL_STAGE_REVIEW)
+            action_taken = f"Deal moved to {ATTIO_DEAL_STAGE_REVIEW}." if result else "Could not update deal stage."
+        elif vote == "good_deal":
+            action_taken = "Deal confirmed. No changes made."
+    else:
+        # Assessment-quality feedback: no CRM changes, used for calibration
+        if vote == "assessment_good":
+            action_taken = "Thanks. This confirms Fairplay's scoring was on target."
+        elif vote == "assessment_bad":
+            action_taken = "Thanks. This signals Fairplay's scoring was off. We'll use this to calibrate."
 
-    emoji_map = {"good_deal": "Confirmed", "not_a_deal": "Moved to Lost", "needs_review": "Moved to Review"}
+    emoji_map = {
+        "good_deal": "Confirmed as Deal",
+        "not_a_deal": "Moved to Lost",
+        "needs_review": "Moved to Review",
+        "assessment_good": "Assessment: Accurate",
+        "assessment_bad": "Assessment: Off the mark",
+    }
     from fastapi.responses import HTMLResponse
     return HTMLResponse(
         f"<html><body style='font-family:sans-serif;text-align:center;padding:60px;'>"
@@ -2358,7 +2404,7 @@ def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
         f"<p>Deal: <b>{deal_id}</b></p>"
         f"<p>Your vote: <b>{emoji_map.get(vote, vote)}</b></p>"
         f"<p>{action_taken}</p>"
-        f"<p>Thanks! This helps DealSmart get smarter over time.</p>"
+        f"<p>Thanks! This helps Fairplay get smarter over time.</p>"
         f"</body></html>"
     )
 
