@@ -3150,6 +3150,84 @@ def debug_processed():
     return {"error": "database not available"}
 
 
+@app.post("/debug/resend-notification")
+def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent CFO"):
+    """Re-send the Slack/Teams notification for a previously scored deal by meeting title."""
+    if not database.is_available():
+        return {"error": "Database not available"}
+
+    # Find the connection
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    db = database.get_conn()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            """SELECT deal_id, deal_name, meeting_title, score, recommendation, framework,
+                      breakdown, analysis, metadata, key_insight, company_name, created_at
+               FROM scored_deals
+               WHERE meeting_title ILIKE %s
+               ORDER BY created_at DESC LIMIT 1""",
+            (f"%{meeting_title}%",),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return {"error": f"No scored deal found matching '{meeting_title}'"}
+
+        # Rebuild score_result and analysis from stored data
+        (deal_id, deal_name, title, score, recommendation, framework,
+         breakdown, analysis_blob, metadata_blob, key_insight, company_name, created_at) = row
+
+        score_result = {
+            "total_score": score,
+            "recommendation": recommendation,
+            "framework": framework,
+            "breakdown": breakdown if isinstance(breakdown, dict) else {},
+            "key_insight": key_insight,
+            "deal_name_suggestion": deal_name,
+        }
+        # Reconstruct minimal analysis for notification (meeting_type etc.)
+        analysis = analysis_blob if isinstance(analysis_blob, dict) else {}
+        if "prospect_company" not in analysis:
+            analysis["prospect_company"] = {"name": company_name}
+        metadata = metadata_blob if isinstance(metadata_blob, dict) else {}
+        metadata["title"] = title
+
+        # Get previous scores for cumulative
+        previous_scores = _get_previous_scores(company_name) if company_name else []
+        # Drop the current scoring from previous (it's already in the list)
+        previous_scores = [p for p in previous_scores if p.get("meeting_title") != title]
+
+        # Send via unified notification
+        is_shadow = conn.get("shadow_mode", False)
+        _send_notification(
+            conn, score_result, analysis, metadata,
+            deal_id=deal_id, existing_deal=None, previous_scores=previous_scores,
+            shadow_mode=is_shadow,
+        )
+
+        return {
+            "status": "sent",
+            "meeting_title": title,
+            "score": score,
+            "deal_id": deal_id or deal_name,
+            "slack": bool(conn.get("slack_webhook_url")),
+            "teams": bool(conn.get("teams_webhook_url")),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        database.put_conn(db)
+
+
 @app.get("/debug/fireflies-recent")
 def debug_fireflies_recent(connection_name: str = "My Team", days: int = 3):
     """List recent Fireflies transcripts with titles to help find specific calls."""
