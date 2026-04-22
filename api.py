@@ -3228,6 +3228,100 @@ def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent
         database.put_conn(db)
 
 
+@app.get("/debug/zoom-recent")
+def debug_zoom_recent(connection_name: str = "Ascent CFO", days: int = 2):
+    """List recent Zoom recordings for a connection to find specific calls."""
+    import zoom_client
+    from datetime import timedelta
+
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    zoom_email = conn.get("zoom_user_email", "")
+    if not zoom_email:
+        return {"error": "No Zoom user email on this connection"}
+
+    since_dt = datetime.now() - timedelta(days=days)
+    try:
+        recordings = zoom_client.list_recordings(
+            user_email=zoom_email,
+            since=since_dt,
+            account_id=conn.get("zoom_account_id", ""),
+            client_id=conn.get("zoom_client_id", ""),
+            client_secret=conn.get("zoom_client_secret", ""),
+        )
+        return {
+            "count": len(recordings),
+            "recordings": [
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "date": r["date"],
+                    "duration": r["duration"],
+                    "has_transcript": r["has_transcript"],
+                }
+                for r in recordings
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/debug/zoom-transcript/{recording_id}")
+def debug_zoom_transcript(recording_id: str, connection_name: str = "Ascent CFO"):
+    """Download and return the transcript text for a specific Zoom recording."""
+    import zoom_client
+    from datetime import timedelta
+
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    # Find the recording
+    since_dt = datetime.now() - timedelta(days=7)
+    recordings = zoom_client.list_recordings(
+        user_email=conn.get("zoom_user_email", ""),
+        since=since_dt,
+        account_id=conn.get("zoom_account_id", ""),
+        client_id=conn.get("zoom_client_id", ""),
+        client_secret=conn.get("zoom_client_secret", ""),
+    )
+    target = None
+    for r in recordings:
+        if r["id"] == recording_id:
+            target = r
+            break
+    if not target:
+        return {"error": f"Recording {recording_id} not found"}
+
+    if not target.get("transcript_url"):
+        return {"error": "No transcript available for this recording", "title": target["title"]}
+
+    text = zoom_client.download_transcript(
+        target["transcript_url"],
+        account_id=conn.get("zoom_account_id", ""),
+        client_id=conn.get("zoom_client_id", ""),
+        client_secret=conn.get("zoom_client_secret", ""),
+    )
+    return {
+        "title": target["title"],
+        "date": target["date"],
+        "duration": target["duration"],
+        "transcript": text,
+    }
+
+
 @app.get("/debug/fireflies-recent")
 def debug_fireflies_recent(connection_name: str = "My Team", days: int = 3):
     """List recent Fireflies transcripts with titles to help find specific calls."""
