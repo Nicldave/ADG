@@ -1018,9 +1018,17 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         return
 
     except Exception as e:
-        logger.error(f"[{conn.get('name', '?')}] Pipeline failed for transcript {transcript_id}: {e}")
-        # Track retry count. Only mark as permanent error after 3 attempts.
+        err_str = str(e).lower()
         conn_name = conn.get("name", "Default")
+
+        # Terminal errors: transcript permanently gone. Mark as error immediately, no retries, no alert.
+        if "object_not_found" in err_str or "transcript not found" in err_str or "404" in err_str:
+            logger.info(f"[{conn_name}] Transcript {transcript_id} not found in Fireflies (likely deduped server-side), marking as error silently")
+            _mark_processed(transcript_id, conn_name, status="error", error="Transcript not found in Fireflies (404)")
+            return
+
+        logger.error(f"[{conn_name}] Pipeline failed for transcript {transcript_id}: {e}")
+        # Track retry count. Only mark as permanent error after 3 attempts.
         retry_count = _get_retry_count(transcript_id, conn_name)
         if retry_count >= 2:
             _mark_processed(transcript_id, conn_name, status="error", error=str(e)[:500])
@@ -1145,7 +1153,8 @@ def _send_slack_notification(
     emoji = ":large_green_circle:" if score >= 70 else ":large_yellow_circle:" if score >= 50 else ":red_circle:"
 
     base_url = _get_base_url()
-    feedback_id = deal_id or deal_name
+    from urllib.parse import quote
+    feedback_id = quote(deal_id or deal_name, safe='')
 
     # Build score breakdown with per-category assessments
     breakdown = score_result.get("breakdown", {})
@@ -1293,7 +1302,8 @@ def _send_teams_notification(
         cumulative_line = f"Deal Score: **{cum_score}/100** (cumulative across {len(previous_scores) + 1} calls)\n\n"
 
     base_url = _get_base_url()
-    feedback_id = deal_id or deal_name
+    from urllib.parse import quote
+    feedback_id = quote(deal_id or deal_name, safe='')
 
     # Meeting type label
     meeting_type = analysis.get("meeting_type", "")
@@ -2372,17 +2382,27 @@ def submit_feedback(deal_id: str, vote: str = "not_a_deal", note: str = ""):
 
     action_taken = "Feedback logged."
     if vote in deal_votes:
-        # Deal-quality feedback: update Attio stage
-        import attio_client
-        if vote == "not_a_deal":
-            result = attio_client.update_deal_stage(deal_id, "Lost")
-            action_taken = "Deal moved to Lost." if result else "Could not update deal stage."
-        elif vote == "needs_review":
-            from config import ATTIO_DEAL_STAGE_REVIEW
-            result = attio_client.update_deal_stage(deal_id, ATTIO_DEAL_STAGE_REVIEW)
-            action_taken = f"Deal moved to {ATTIO_DEAL_STAGE_REVIEW}." if result else "Could not update deal stage."
-        elif vote == "good_deal":
-            action_taken = "Deal confirmed. No changes made."
+        # Deal-quality feedback: update Attio stage if deal_id looks like a real Attio record ID (UUID)
+        # If it's a deal name (e.g. "NN-Street Talk-KO-2026.04"), skip CRM update but still log feedback
+        is_attio_id = len(deal_id) == 36 and deal_id.count("-") == 4
+        if is_attio_id:
+            try:
+                import attio_client
+                if vote == "not_a_deal":
+                    result = attio_client.update_deal_stage(deal_id, "Lost")
+                    action_taken = "Deal moved to Lost." if result else "Feedback logged (stage update failed)."
+                elif vote == "needs_review":
+                    from config import ATTIO_DEAL_STAGE_REVIEW
+                    result = attio_client.update_deal_stage(deal_id, ATTIO_DEAL_STAGE_REVIEW)
+                    action_taken = f"Deal moved to {ATTIO_DEAL_STAGE_REVIEW}." if result else "Feedback logged (stage update failed)."
+                elif vote == "good_deal":
+                    action_taken = "Deal confirmed. No changes made."
+            except Exception as e:
+                logger.warning(f"Attio stage update failed: {e}")
+                action_taken = "Feedback logged (CRM update failed)."
+        else:
+            # Not a real Attio ID (shadow mode or failed deal creation). Just log the feedback.
+            action_taken = "Feedback logged. Deal was not created in CRM."
     else:
         # Assessment-quality feedback: no CRM changes, used for calibration
         if vote == "assessment_good":
@@ -4212,7 +4232,12 @@ def resolve_needs_review(deal_db_id: int, action: str = "approve"):
         deal_name, score, company_name = row
 
         # Log feedback
-        _save_feedback(str(deal_db_id), action, f"Resolved from Needs Review queue")
+        _save_feedback({
+            "deal_id": str(deal_db_id),
+            "vote": action,
+            "note": "Resolved from Needs Review queue",
+            "timestamp": datetime.now().isoformat(),
+        })
 
         return {
             "id": deal_db_id,
@@ -4226,28 +4251,6 @@ def resolve_needs_review(deal_db_id: int, action: str = "approve"):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to resolve: {e}")
-    finally:
-        database.put_conn(db)
-
-
-def _save_feedback(deal_id: str, vote: str, note: str = ""):
-    """Save feedback to the feedback table."""
-    if not database.is_available():
-        return
-    db = database.get_conn()
-    if not db:
-        return
-    try:
-        cur = db.cursor()
-        cur.execute(
-            "INSERT INTO feedback (deal_id, vote, note) VALUES (%s, %s, %s)",
-            (deal_id, vote, note),
-        )
-        db.commit()
-        cur.close()
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"Failed to save feedback: {e}")
     finally:
         database.put_conn(db)
 
