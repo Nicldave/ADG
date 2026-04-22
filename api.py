@@ -3150,6 +3150,68 @@ def debug_processed():
     return {"error": "database not available"}
 
 
+@app.get("/debug/hubspot-identify-app")
+def debug_hubspot_identify_app(app_id: str, connection_name: str = "Ascent CFO"):
+    """Look up the name of a HubSpot integration/app by its ID."""
+    import requests as req_lib
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    hs_key = conn.get("crm_api_key", "")
+    if not hs_key:
+        return {"error": "No HubSpot API key on this connection"}
+
+    headers = {"Authorization": f"Bearer {hs_key}"}
+
+    # Try the OAuth apps endpoint
+    results = {}
+    try:
+        resp = req_lib.get(
+            f"https://api.hubapi.com/oauth/v1/access-tokens/{hs_key}",
+            headers=headers,
+            timeout=15,
+        )
+        if resp.ok:
+            results["token_info"] = resp.json()
+    except Exception as e:
+        results["token_err"] = str(e)
+
+    # Get info on this specific app via the integrations endpoint
+    try:
+        resp = req_lib.get(
+            f"https://api.hubapi.com/integrations/v1/me",
+            headers=headers,
+            timeout=15,
+        )
+        if resp.ok:
+            results["integration_me"] = resp.json()
+    except Exception as e:
+        results["me_err"] = str(e)
+
+    # Try to get public app info by ID
+    try:
+        resp = req_lib.get(
+            f"https://api.hubapi.com/integrations/v1/{app_id}",
+            headers=headers,
+            timeout=15,
+        )
+        results["app_lookup_status"] = resp.status_code
+        if resp.ok:
+            results["app_info"] = resp.json()
+        else:
+            results["app_lookup_body"] = resp.text[:500]
+    except Exception as e:
+        results["app_err"] = str(e)
+
+    return results
+
+
 @app.get("/debug/hubspot-deal-history")
 def debug_hubspot_deal_history(deal_name: str = "", deal_id: str = "", connection_name: str = "Ascent CFO"):
     """Look up a HubSpot deal and its stage history to trace who/what moved it."""
