@@ -3150,6 +3150,104 @@ def debug_processed():
     return {"error": "database not available"}
 
 
+@app.get("/debug/hubspot-deal-history")
+def debug_hubspot_deal_history(deal_name: str = "", deal_id: str = "", connection_name: str = "Ascent CFO"):
+    """Look up a HubSpot deal and its stage history to trace who/what moved it."""
+    import requests as req_lib
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    hs_key = conn.get("crm_api_key", "")
+    if not hs_key:
+        return {"error": "No HubSpot API key on this connection"}
+
+    headers = {"Authorization": f"Bearer {hs_key}", "Content-Type": "application/json"}
+
+    # Step 1: find the deal by name or ID
+    deal = None
+    if deal_id:
+        resp = req_lib.get(
+            f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}",
+            headers=headers,
+            params={"properties": "dealname,dealstage,pipeline,hs_lastmodifieddate,closedate,amount,hs_deal_stage_probability"},
+            timeout=15,
+        )
+        if resp.ok:
+            deal = resp.json()
+    elif deal_name:
+        # Search by name
+        resp = req_lib.post(
+            "https://api.hubapi.com/crm/v3/objects/deals/search",
+            headers=headers,
+            json={
+                "filterGroups": [{
+                    "filters": [{"propertyName": "dealname", "operator": "CONTAINS_TOKEN", "value": deal_name}]
+                }],
+                "properties": ["dealname", "dealstage", "pipeline", "hs_lastmodifieddate", "closedate", "amount"],
+                "limit": 5,
+            },
+            timeout=15,
+        )
+        if resp.ok:
+            results = resp.json().get("results", [])
+            if results:
+                deal = results[0]
+
+    if not deal:
+        return {"error": "Deal not found"}
+
+    deal_hs_id = deal.get("id")
+
+    # Step 2: get stage history via property history endpoint
+    history_resp = req_lib.get(
+        f"https://api.hubapi.com/crm/v3/objects/deals/{deal_hs_id}",
+        headers=headers,
+        params={
+            "propertiesWithHistory": "dealstage,dealname,closedate,amount",
+            "properties": "dealname,dealstage,pipeline,closedate",
+        },
+        timeout=15,
+    )
+    history_data = history_resp.json() if history_resp.ok else {}
+    stage_history = history_data.get("propertiesWithHistory", {}).get("dealstage", [])
+
+    # Step 3: recent engagements/activities on the deal
+    activities_resp = req_lib.get(
+        f"https://api.hubapi.com/crm/v4/objects/deals/{deal_hs_id}/associations/notes",
+        headers=headers,
+        params={"limit": 10},
+        timeout=15,
+    )
+    notes_associations = activities_resp.json().get("results", []) if activities_resp.ok else []
+
+    return {
+        "deal": {
+            "id": deal_hs_id,
+            "name": deal.get("properties", {}).get("dealname"),
+            "stage": deal.get("properties", {}).get("dealstage"),
+            "last_modified": deal.get("properties", {}).get("hs_lastmodifieddate"),
+            "pipeline": deal.get("properties", {}).get("pipeline"),
+        },
+        "stage_history": [
+            {
+                "value": h.get("value"),
+                "timestamp": h.get("timestamp"),
+                "source_type": h.get("sourceType"),
+                "source_id": h.get("sourceId"),
+                "updated_by_user_id": h.get("updatedByUserId"),
+            }
+            for h in stage_history
+        ],
+        "note_associations": len(notes_associations),
+    }
+
+
 @app.post("/debug/resend-notification")
 def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent CFO"):
     """Re-send the Slack/Teams notification for a previously scored deal by meeting title."""
