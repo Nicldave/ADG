@@ -137,7 +137,7 @@ def format_transcript_text(transcript: dict) -> str:
     Returns:
         Formatted transcript string with speaker labels.
     """
-    sentences = transcript.get("sentences", [])
+    sentences = transcript.get("sentences") or []
     if not sentences:
         return ""
 
@@ -145,8 +145,10 @@ def format_transcript_text(transcript: dict) -> str:
     current_speaker = None
 
     for sentence in sentences:
-        speaker = sentence.get("speaker_name", "Unknown")
-        text = sentence.get("text", "").strip()
+        if not isinstance(sentence, dict):
+            continue
+        speaker = sentence.get("speaker_name") or "Unknown"
+        text = (sentence.get("text") or "").strip()
 
         if not text:
             continue
@@ -172,17 +174,19 @@ def get_meeting_metadata(transcript: dict) -> dict:
     if date_val:
         meeting_date = datetime.fromtimestamp(date_val / 1000).isoformat()
 
-    duration_seconds = transcript.get("duration", 0)
-    summary_data = transcript.get("summary", {})
+    duration_seconds = transcript.get("duration") or 0
+    # Defensive: Fireflies can return summary: null (not missing), so fallback to {}
+    summary_data = transcript.get("summary") or {}
+    participants = transcript.get("participants") or []
 
     return {
-        "title": transcript.get("title", "Untitled Meeting"),
+        "title": transcript.get("title") or "Untitled Meeting",
         "date": meeting_date,
         "duration_minutes": round(duration_seconds / 60, 1) if duration_seconds else 0,
-        "participants": transcript.get("participants", []),
-        "organizer": transcript.get("organizer_email", ""),
-        "action_items": summary_data.get("action_items", ""),
-        "summary": summary_data.get("overview", ""),
-        "keywords": summary_data.get("keywords", ""),
-        "transcript_url": transcript.get("transcript_url", ""),
+        "participants": participants,
+        "organizer": transcript.get("organizer_email") or "",
+        "action_items": summary_data.get("action_items", "") if isinstance(summary_data, dict) else "",
+        "summary": summary_data.get("overview", "") if isinstance(summary_data, dict) else "",
+        "keywords": summary_data.get("keywords", "") if isinstance(summary_data, dict) else "",
+        "transcript_url": transcript.get("transcript_url") or "",
     }

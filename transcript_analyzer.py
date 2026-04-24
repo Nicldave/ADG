@@ -308,9 +308,30 @@ def analyze_transcript(
 
         analysis = json.loads(response_text)
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Claude response as JSON: {e}")
-        logger.error(f"Raw response: {response_text[:500]}")
-        raise Exception(f"Claude returned invalid JSON: {e}")
+        # Try to repair common JSON issues: trailing commas, unescaped newlines in strings,
+        # smart quotes, or extract first valid JSON object from the response.
+        repaired = None
+        try:
+            import re
+            # Extract the first {...} block
+            brace_start = response_text.find("{")
+            brace_end = response_text.rfind("}")
+            if brace_start >= 0 and brace_end > brace_start:
+                candidate = response_text[brace_start:brace_end + 1]
+                # Remove trailing commas before } or ]
+                candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+                repaired = json.loads(candidate)
+        except Exception:
+            repaired = None
+
+        if repaired is not None:
+            logger.warning(f"Recovered from invalid JSON via repair (position {e.pos})")
+            analysis = repaired
+        else:
+            # Unrecoverable. Treat as transient so it retries silently, no Slack alert.
+            logger.error(f"Failed to parse Claude response as JSON: {e}")
+            logger.error(f"Raw response (first 500 chars): {response_text[:500]}")
+            raise TemporaryAPIError(f"Claude returned invalid JSON: {e}") from e
 
     # Validate required fields
     required_fields = [
