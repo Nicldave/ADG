@@ -132,7 +132,7 @@ def post_to_slack(result: dict, score_result: dict, analysis: dict, dry_run: boo
             {
                 "color": color,
                 "text": "\n".join(lines),
-                "footer": "Auto Deal Generator",
+                "footer": "Fairplay",
                 "ts": int(datetime.now().timestamp()),
             }
         ]
@@ -365,7 +365,7 @@ def print_summary(results: list[dict]):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Auto Deal Generator - analyze meeting transcripts and create CRM deals"
+        description="Fairplay - analyze meeting transcripts and create CRM deals"
     )
     parser.add_argument("--days", type=int, help="Process transcripts from last N days")
     parser.add_argument("--transcript-id", help="Process a specific transcript/call ID")

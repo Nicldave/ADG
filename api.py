@@ -59,7 +59,7 @@ except Exception as e:
     logger.warning(f"Database init skipped: {e}")
 
 app = FastAPI(
-    title="Auto Deal Generator API",
+    title="Fairplay API",
     description="Analyze sales transcripts and create CRM deals.",
     version="1.0.0",
 )

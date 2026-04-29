@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────
 st.set_page_config(
-    page_title="Auto Deal Generator",
+    page_title="Fairplay",
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -131,7 +131,7 @@ def show_objections(objs: list):
 
 
 # ── Header ─────────────────────────────────────────────────────────────────
-st.title("🎯 Auto Deal Generator")
+st.title("Fairplay")
 st.caption(
     "The Strike Zone — consistent deal qualification from every sales conversation. "
     "Same criteria every time, regardless of who ran the call."

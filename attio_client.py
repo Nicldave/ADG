@@ -590,7 +590,7 @@ def _build_description(score_result: dict, analysis: dict, metadata: Optional[di
 
 MEETING: {metadata.get('title', '?') if metadata else '?'}
 DATE: {metadata.get('date', '?') if metadata else '?'}
-SOURCE: Auto Deal Generator
+SOURCE: Fairplay
 {f'RECORDING: {recording_url}' if recording_url else ''}
 SUMMARY: {analysis.get('summary', '')}
 
