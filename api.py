@@ -1540,7 +1540,7 @@ async def slack_score_call(request: Request, background_tasks: BackgroundTasks):
 
     return {
         "response_type": "in_channel",
-        "text": f":hourglass_flowing_sand: Scoring *{title}*... results will appear in #dealsmart shortly.",
+        "text": f":hourglass_flowing_sand: Scoring *{title}*... results will appear shortly.",
     }
 
 
