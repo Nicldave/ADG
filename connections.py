@@ -29,7 +29,7 @@ _CONN_FIELDS = [
     "teams_access_token", "google_access_token", "active", "shadow_mode", "teams_webhook_url",
     "fathom_api_key",
     "sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical",
-    "company_website", "company_icp", "framework_weights",
+    "company_website", "company_icp", "framework_weights", "calibration_notes",
 ]
 
 

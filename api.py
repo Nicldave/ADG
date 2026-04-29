@@ -919,7 +919,7 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             "avg_days_to_close": conn.get("avg_days_to_close", ""),
             "industry_vertical": conn.get("industry_vertical", ""),
         } if any(conn.get(k) for k in ("sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical")) else None
-        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx, company_icp=conn.get("company_icp"))
+        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx, company_icp=conn.get("company_icp"), calibration_notes=conn.get("calibration_notes"))
 
         if not analysis or not isinstance(analysis, dict):
             logger.warning(f"Transcript {transcript_id} analysis returned invalid result, skipping")
@@ -1567,11 +1567,214 @@ async def slack_events(request: Request):
             thread_ts = event.get("thread_ts", "")
             channel = event.get("channel", "")
 
-            # Only process threaded replies (replies to calibration prompts)
+            # Only process threaded replies
             if thread_ts and text:
-                _handle_calibration_reply(text, channel, thread_ts)
+                # First try scoring-notification feedback (newer flow), fall back to calibration matching
+                handled = _handle_scoring_feedback_reply(text, channel, thread_ts)
+                if not handled:
+                    _handle_calibration_reply(text, channel, thread_ts)
 
     return {"ok": True}
+
+
+def _fetch_slack_thread_parent(channel: str, thread_ts: str) -> Optional[str]:
+    """Fetch the parent message of a Slack thread. Returns text or None."""
+    if not SLACK_BOT_TOKEN:
+        return None
+    try:
+        import requests as req_lib
+        resp = req_lib.get(
+            "https://slack.com/api/conversations.replies",
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+            params={"channel": channel, "ts": thread_ts, "limit": 1},
+            timeout=10,
+        )
+        if not resp.ok:
+            return None
+        data = resp.json()
+        messages = data.get("messages", [])
+        if not messages:
+            return None
+        return messages[0].get("text", "")
+    except Exception as e:
+        logger.warning(f"Failed to fetch Slack thread parent: {e}")
+        return None
+
+
+def _handle_scoring_feedback_reply(reply_text: str, channel: str, thread_ts: str) -> bool:
+    """
+    Process a Slack reply on a Fairplay scoring notification thread.
+    Parses the parent message for the deal_id, runs the reply through Claude
+    to extract a calibration note, and appends to the connection's calibration_notes.
+    Returns True if handled (a Fairplay notification thread), False otherwise.
+    """
+    parent = _fetch_slack_thread_parent(channel, thread_ts)
+    if not parent or "Fairplay" not in parent:
+        return False
+
+    # Parse the deal_id from the feedback URL pattern in the parent message
+    import re
+    from urllib.parse import unquote
+    m = re.search(r"/feedback/([^?>|\s]+)\?vote=", parent)
+    if not m:
+        return False
+    deal_id = unquote(m.group(1))
+
+    if not database.is_available():
+        return True
+
+    # Look up the scored deal and the connection
+    db = database.get_conn()
+    if not db:
+        return True
+    try:
+        cur = db.cursor()
+        cur.execute(
+            """SELECT deal_name, meeting_title, score, recommendation, framework, breakdown,
+                      key_insight, company_name, metadata
+               FROM scored_deals
+               WHERE deal_id = %s OR deal_name = %s
+               ORDER BY created_at DESC LIMIT 1""",
+            (deal_id, deal_id),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            logger.info(f"Scoring feedback reply: no scored deal found for {deal_id}")
+            return True
+
+        deal_name, meeting_title, score, recommendation, framework, breakdown, key_insight, company_name, metadata = row
+
+        # Find the connection from metadata
+        connection_name = ""
+        if isinstance(metadata, dict):
+            connection_name = metadata.get("connection_name", "")
+        elif isinstance(metadata, str):
+            try:
+                meta_obj = json.loads(metadata)
+                connection_name = meta_obj.get("connection_name", "")
+            except Exception:
+                pass
+
+        conn_obj = None
+        if connection_name:
+            for c in connections.list_connections_full():
+                if c.get("name") == connection_name:
+                    conn_obj = c
+                    break
+
+        # Run reply through Claude to extract a calibration insight
+        breakdown_str = " | ".join(
+            f"{k}: {v.get('score', 0)}/{v.get('max', 0)}" for k, v in (breakdown or {}).items()
+        ) if isinstance(breakdown, dict) else ""
+
+        calibration_note = _extract_calibration_note(
+            reply_text=reply_text,
+            meeting_title=meeting_title or "",
+            framework=framework or "custom",
+            score=score,
+            breakdown_str=breakdown_str,
+            key_insight=key_insight or "",
+            company_name=company_name or "",
+        )
+
+        if not calibration_note:
+            return True
+
+        # Append to connection's calibration_notes
+        if conn_obj:
+            existing = conn_obj.get("calibration_notes", "") or ""
+            timestamp = datetime.now().strftime("%Y-%m-%d")
+            new_entry = f"[{timestamp}] {calibration_note}"
+            updated = (existing + "\n" + new_entry).strip() if existing else new_entry
+            # Cap at ~8000 chars to keep prompt size sane
+            if len(updated) > 8000:
+                updated = updated[-8000:]
+                idx = updated.find("\n")
+                if idx > 0:
+                    updated = updated[idx + 1:]
+            connections.update_connection(conn_obj["webhook_id"], {"calibration_notes": updated})
+
+        # Confirm in thread
+        if SLACK_BOT_TOKEN:
+            import requests as req_lib
+            try:
+                req_lib.post(
+                    "https://slack.com/api/chat.postMessage",
+                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                    json={
+                        "channel": channel,
+                        "thread_ts": thread_ts,
+                        "text": f":brain: Calibration noted for future scoring: _{calibration_note}_",
+                    },
+                    timeout=10,
+                )
+            except Exception:
+                pass
+
+        # Also log to feedback table as a freeform note
+        _save_feedback({
+            "deal_id": deal_id,
+            "vote": "calibration_note",
+            "note": f"User: {reply_text[:300]} | Extracted: {calibration_note[:300]}",
+            "timestamp": datetime.now().isoformat(),
+        })
+
+        logger.info(f"Calibration note saved for {company_name} via Slack reply")
+        return True
+    except Exception as e:
+        logger.warning(f"Scoring feedback reply handling failed: {e}")
+        return True
+    finally:
+        database.put_conn(db)
+
+
+def _extract_calibration_note(
+    reply_text: str, meeting_title: str, framework: str, score: int,
+    breakdown_str: str, key_insight: str, company_name: str,
+) -> str:
+    """Use Claude to convert natural-language Slack feedback into a structured calibration note."""
+    try:
+        import anthropic
+        from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        prompt = f"""A sales leader gave feedback on a Fairplay scoring decision via Slack. Convert their feedback into a SHORT calibration note that will be added to this company's scoring context for future calls.
+
+The note should be 1-2 sentences, in the form of a rule or pattern Fairplay should remember. Examples:
+- "When a prospect mentions specific dollar amounts and timeline together, that's a strong budget+timeline signal regardless of brevity."
+- "For this company, post-acquisition founders count as decision_makers even without an explicit title statement."
+
+Do NOT just restate the feedback. Extract the underlying rule.
+
+CALL CONTEXT:
+- Meeting: {meeting_title}
+- Company: {company_name}
+- Framework: {framework.upper()}
+- Score: {score}/100
+- Breakdown: {breakdown_str}
+- Key insight: {key_insight}
+
+USER FEEDBACK:
+{reply_text}
+
+Return ONLY the calibration note as plain text. No quotes, no markdown, no preamble. If the feedback is not actionable for future scoring (e.g., just "thanks" or "ok"), return the literal string SKIP."""
+
+        message = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        note = message.content[0].text.strip()
+        if note.upper().startswith("SKIP"):
+            return ""
+        # Strip markdown wrapping if Claude added it
+        if note.startswith("```"):
+            note = note.split("```")[1].strip()
+        return note[:400]
+    except Exception as e:
+        logger.warning(f"Calibration note extraction failed: {e}")
+        return ""
 
 
 def _handle_calibration_reply(reply_text: str, channel: str, thread_ts: str):
@@ -1760,7 +1963,7 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
             "avg_days_to_close": conn.get("avg_days_to_close", ""),
             "industry_vertical": conn.get("industry_vertical", ""),
         } if any(conn.get(k) for k in ("sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical")) else None
-        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx, company_icp=conn.get("company_icp"))
+        analysis = transcript_analyzer.analyze_transcript(text, metadata, framework=framework, business_context=biz_ctx, company_icp=conn.get("company_icp"), calibration_notes=conn.get("calibration_notes"))
 
         if not analysis.get("is_sales_conversation"):
             logger.info(f"[{conn['name']}] Not a sales conversation, skipping deal creation")
@@ -4441,7 +4644,7 @@ def warm_start(webhook_id: str, count: int = 20):
 
                 analysis = transcript_analyzer.analyze_transcript(
                     text, metadata, framework=framework,
-                    business_context=biz_ctx, company_icp=conn.get("company_icp"),
+                    business_context=biz_ctx, company_icp=conn.get("company_icp"), calibration_notes=conn.get("calibration_notes"),
                 )
                 score_result = deal_scorer.score_deal(analysis, custom_weights=custom_weights)
 

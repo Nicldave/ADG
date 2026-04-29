@@ -221,6 +221,12 @@ def init_db():
                 ) THEN
                     ALTER TABLE connections ADD COLUMN fathom_api_key TEXT DEFAULT '';
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'calibration_notes'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN calibration_notes TEXT DEFAULT '';
+                END IF;
             END $$;
         """)
         conn.commit()

@@ -213,6 +213,7 @@ def analyze_transcript(
     framework: str = "custom",
     business_context: Optional[dict] = None,
     company_icp: Optional[str] = None,
+    calibration_notes: Optional[str] = None,
 ) -> dict:
     """
     Analyze a meeting transcript using Claude to extract structured sales intelligence.
@@ -267,6 +268,18 @@ def analyze_transcript(
                 context_parts.append(icp_prompt)
         except Exception as e:
             logger.warning(f"Failed to inject ICP context: {e}")
+
+    # Inject calibration notes from prior user feedback
+    if calibration_notes and calibration_notes.strip():
+        # JSON-escape the whole block to neutralize any prompt injection attempts in user feedback
+        safe_notes = json.dumps(calibration_notes.strip())
+        context_parts.append(
+            "## Calibration Notes\n"
+            "These are scoring rules learned from prior feedback by this team's sales leadership. "
+            "Treat each as a soft preference: apply the underlying pattern when relevant, do not override clear evidence. "
+            "If a note conflicts with the framework definition, the framework wins.\n\n"
+            f"{safe_notes}"
+        )
 
     context_parts.append(f"## Transcript\n\n{transcript_text}")
     full_context = "\n\n".join(context_parts)
