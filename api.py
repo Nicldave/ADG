@@ -3593,6 +3593,52 @@ def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent
         database.put_conn(db)
 
 
+@app.get("/debug/connection-fingerprints")
+def debug_connection_fingerprints(connection_name: str = "My Team"):
+    """Compare connections with the same name by API key fingerprints to identify true duplicates."""
+    import hashlib
+    all_conns = connections.list_connections_full()
+    matches = [c for c in all_conns if c.get("name") == connection_name]
+    if not matches:
+        return {"error": f"No connections found for '{connection_name}'"}
+
+    def fp(s: str) -> str:
+        if not s:
+            return ""
+        return hashlib.sha256(s.encode()).hexdigest()[:8]
+
+    return {
+        "connection_name": connection_name,
+        "count": len(matches),
+        "connections": [
+            {
+                "webhook_id": c["webhook_id"],
+                "transcript_source": c.get("transcript_source"),
+                "crm": c.get("crm"),
+                "framework": c.get("framework"),
+                "shadow_mode": c.get("shadow_mode"),
+                "fireflies_key_fp": fp(c.get("fireflies_api_key", "")),
+                "crm_key_fp": fp(c.get("crm_api_key", "")),
+                "slack_webhook_fp": fp(c.get("slack_webhook_url", "")),
+                "has_calibration_notes": bool(c.get("calibration_notes", "")),
+                "calibration_chars": len(c.get("calibration_notes", "") or ""),
+                "company_icp_set": bool(c.get("company_icp", "")),
+                "framework_weights_set": bool(c.get("framework_weights", "")),
+            }
+            for c in matches
+        ],
+    }
+
+
+@app.delete("/debug/connection/{webhook_id}")
+def debug_delete_connection(webhook_id: str, confirm: str = ""):
+    """Delete a connection by webhook_id. Requires confirm=YES to actually delete."""
+    if confirm != "YES":
+        return {"error": "Pass confirm=YES to actually delete"}
+    deleted = connections.delete_connection(webhook_id)
+    return {"deleted": deleted, "webhook_id": webhook_id}
+
+
 @app.get("/debug/calibration-notes")
 def debug_calibration_notes(connection_name: str = "My Team", webhook_id: str = ""):
     """Show calibration notes accumulated on a connection. Use webhook_id to target a specific connection."""
