@@ -3594,19 +3594,32 @@ def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent
 
 
 @app.get("/debug/calibration-notes")
-def debug_calibration_notes(connection_name: str = "My Team"):
-    """Show calibration notes accumulated on a connection."""
+def debug_calibration_notes(connection_name: str = "My Team", webhook_id: str = ""):
+    """Show calibration notes accumulated on a connection. Use webhook_id to target a specific connection."""
     all_conns = connections.list_connections_full()
-    conn = None
+    matches = []
     for c in all_conns:
-        if c.get("name") == connection_name:
-            conn = c
-            break
-    if not conn:
-        return {"error": f"Connection '{connection_name}' not found"}
+        if webhook_id:
+            if c.get("webhook_id") == webhook_id:
+                matches = [c]
+                break
+        elif c.get("name") == connection_name:
+            matches.append(c)
+    if not matches:
+        return {"error": f"Connection not found"}
+    if len(matches) > 1:
+        return {
+            "warning": f"{len(matches)} connections match name '{connection_name}'. Pass webhook_id to disambiguate.",
+            "connections": [
+                {"webhook_id": c["webhook_id"], "char_count": len(c.get("calibration_notes", "") or "")}
+                for c in matches
+            ],
+        }
+    conn = matches[0]
     notes = conn.get("calibration_notes", "") or ""
     return {
-        "connection": connection_name,
+        "connection": conn.get("name"),
+        "webhook_id": conn["webhook_id"],
         "char_count": len(notes),
         "note_count": len([l for l in notes.split("\n") if l.strip()]),
         "notes": notes,
@@ -3614,18 +3627,24 @@ def debug_calibration_notes(connection_name: str = "My Team"):
 
 
 @app.post("/debug/add-calibration-note")
-def debug_add_calibration_note(connection_name: str = "My Team", note: str = ""):
+def debug_add_calibration_note(connection_name: str = "My Team", note: str = "", webhook_id: str = ""):
     """Manually add a calibration note for testing prompt injection."""
     if not note:
         return {"error": "note query param required"}
     all_conns = connections.list_connections_full()
     conn = None
-    for c in all_conns:
-        if c.get("name") == connection_name:
-            conn = c
-            break
+    if webhook_id:
+        for c in all_conns:
+            if c.get("webhook_id") == webhook_id:
+                conn = c
+                break
+    else:
+        for c in all_conns:
+            if c.get("name") == connection_name:
+                conn = c
+                break
     if not conn:
-        return {"error": f"Connection '{connection_name}' not found"}
+        return {"error": f"Connection not found"}
     existing = conn.get("calibration_notes", "") or ""
     timestamp = datetime.now().strftime("%Y-%m-%d")
     new_entry = f"[{timestamp}] {note}"
