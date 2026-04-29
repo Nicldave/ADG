@@ -3593,6 +3593,47 @@ def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent
         database.put_conn(db)
 
 
+@app.get("/debug/calibration-notes")
+def debug_calibration_notes(connection_name: str = "My Team"):
+    """Show calibration notes accumulated on a connection."""
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+    notes = conn.get("calibration_notes", "") or ""
+    return {
+        "connection": connection_name,
+        "char_count": len(notes),
+        "note_count": len([l for l in notes.split("\n") if l.strip()]),
+        "notes": notes,
+    }
+
+
+@app.post("/debug/add-calibration-note")
+def debug_add_calibration_note(connection_name: str = "My Team", note: str = ""):
+    """Manually add a calibration note for testing prompt injection."""
+    if not note:
+        return {"error": "note query param required"}
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+    existing = conn.get("calibration_notes", "") or ""
+    timestamp = datetime.now().strftime("%Y-%m-%d")
+    new_entry = f"[{timestamp}] {note}"
+    updated = (existing + "\n" + new_entry).strip() if existing else new_entry
+    connections.update_connection(conn["webhook_id"], {"calibration_notes": updated})
+    return {"status": "added", "total_chars": len(updated)}
+
+
 @app.get("/debug/zoom-recent")
 def debug_zoom_recent(connection_name: str = "Ascent CFO", days: int = 2):
     """List recent Zoom recordings for a connection to find specific calls."""
