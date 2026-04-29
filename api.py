@@ -3630,8 +3630,38 @@ def debug_add_calibration_note(connection_name: str = "My Team", note: str = "")
     timestamp = datetime.now().strftime("%Y-%m-%d")
     new_entry = f"[{timestamp}] {note}"
     updated = (existing + "\n" + new_entry).strip() if existing else new_entry
-    connections.update_connection(conn["webhook_id"], {"calibration_notes": updated})
-    return {"status": "added", "total_chars": len(updated)}
+
+    # Direct DB write so we can surface SQL errors instead of swallowing them
+    if not database.is_available():
+        return {"error": "Database not available"}
+    db = database.get_conn()
+    if not db:
+        return {"error": "Database connection failed"}
+    try:
+        cur = db.cursor()
+        # First check if column exists
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='connections' AND column_name='calibration_notes'"
+        )
+        col_exists = cur.fetchone() is not None
+        if not col_exists:
+            cur.close()
+            return {"error": "calibration_notes column does not exist in DB", "migration_needed": True}
+
+        cur.execute(
+            "UPDATE connections SET calibration_notes = %s WHERE webhook_id = %s",
+            (updated, conn["webhook_id"]),
+        )
+        rowcount = cur.rowcount
+        db.commit()
+        cur.close()
+        return {"status": "added", "total_chars": len(updated), "rows_updated": rowcount}
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e), "type": type(e).__name__}
+    finally:
+        database.put_conn(db)
 
 
 @app.get("/debug/zoom-recent")
