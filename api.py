@@ -3017,6 +3017,8 @@ def _poll_all_connections():
                 "request_timeout", "408", "timed out", "timeout",
                 "connection reset", "connection refused", "service unavailable", "503",
                 "bad gateway", "502", "gateway timeout", "504",
+                "520", "521", "522", "523", "524", "525", "526", "527",  # Cloudflare errors
+                "ssl error", "ssl: ", "remote disconnected", "max retries exceeded",
             ]
             if any(kw in err_str for kw in transient_keywords):
                 logger.warning(f"[Poller] Transient API error for {conn_name}, will retry next cycle: {e}")
