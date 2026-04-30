@@ -40,8 +40,11 @@ HUBSPOT_STAGE_REVIEW = os.getenv("HUBSPOT_STAGE_REVIEW", "appointmentscheduled")
 
 # Attio
 ATTIO_BASE_URL = "https://api.attio.com/v2"
-ATTIO_DEAL_STAGE_QUALIFIED = os.getenv("ATTIO_DEAL_STAGE_QUALIFIED", "Qualified")
-ATTIO_DEAL_STAGE_REVIEW = os.getenv("ATTIO_DEAL_STAGE_REVIEW", "Needs Review")
+ATTIO_DEAL_STAGE_QUALIFIED = os.getenv("ATTIO_DEAL_STAGE_QUALIFIED", "Discovery Attended")
+ATTIO_DEAL_STAGE_REVIEW = os.getenv("ATTIO_DEAL_STAGE_REVIEW", "Discovery Attended")
+# Map Fairplay data to existing native attributes when available (Nicl pattern)
+ATTIO_FIELD_DEAL_INTELLIGENCE = os.getenv("ATTIO_FIELD_DEAL_INTELLIGENCE", "deal_intelligence")
+ATTIO_FIELD_LAST_SCORED = os.getenv("ATTIO_FIELD_LAST_SCORED", "last_scored")
 # Relationship attribute slugs — check your Attio workspace settings if associations fail
 ATTIO_DEAL_COMPANY_ATTR = os.getenv("ATTIO_DEAL_COMPANY_ATTR", "associated_workspace_member")
 ATTIO_DEAL_PEOPLE_ATTR = os.getenv("ATTIO_DEAL_PEOPLE_ATTR", "associated_people")

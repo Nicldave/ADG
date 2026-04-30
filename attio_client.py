@@ -405,6 +405,7 @@ def create_deal(
         ATTIO_FIELD_CREATION_METHOD, ATTIO_FIELD_BREAKDOWN,
         ATTIO_FIELD_KEY_INSIGHT, ATTIO_FIELD_REP_NAME,
         ATTIO_FIELD_TOUCHPOINTS, ATTIO_FIELD_REVIEW_STATUS,
+        ATTIO_FIELD_DEAL_INTELLIGENCE, ATTIO_FIELD_LAST_SCORED,
     )
     breakdown_text = " | ".join(
         f"{d.get('label', k)}: {d['score']}/{d['max']}"
@@ -425,9 +426,28 @@ def create_deal(
     if metadata:
         touchpoints = metadata.get("touchpoints", 1)
 
+    # Build a rich Deal Intelligence summary that maps to existing native fields
+    framework_name = score_result.get("framework", "custom").upper()
+    deal_intel_text = (
+        f"Score: {score_result['total_score']}/100 ({framework_name})\n"
+        f"Recommendation: {recommendation.replace('_', ' ').title()}\n"
+        f"Auto-Created: Yes | Rep: {rep_name or 'Unknown'} | Touchpoint: #{touchpoints}\n"
+        f"\n"
+        f"BREAKDOWN: {breakdown_text}\n"
+        f"\n"
+        f"INSIGHT: {score_result.get('key_insight', 'N/A')}"
+    )
+
+    # Native fields (likely to exist on most Attio workspaces)
+    native_fields = {
+        ATTIO_FIELD_DEAL_INTELLIGENCE: [{"value": deal_intel_text}],
+        ATTIO_FIELD_LAST_SCORED: [{"value": datetime.now().isoformat()}],
+    }
+
+    # Fairplay custom fields (only used if workspace has them)
     fairplay_fields = {
         ATTIO_FIELD_FAIRPLAY_SCORE: [{"value": score_result["total_score"]}],
-        ATTIO_FIELD_FRAMEWORK: [{"value": score_result.get("framework", "custom").upper()}],
+        ATTIO_FIELD_FRAMEWORK: [{"value": framework_name}],
         ATTIO_FIELD_SCORED_AT: [{"value": datetime.now().isoformat()}],
         ATTIO_FIELD_AUTO_CREATED: [{"value": True}],
         ATTIO_FIELD_CREATION_METHOD: [{"value": f"Fairplay {recommendation}"}],
@@ -437,6 +457,7 @@ def create_deal(
         ATTIO_FIELD_TOUCHPOINTS: [{"value": touchpoints}],
         ATTIO_FIELD_REVIEW_STATUS: [{"value": recommendation}],
     }
+    values.update(native_fields)
     values.update(fairplay_fields)
 
     try:
@@ -462,8 +483,20 @@ def create_deal(
             "score": score_result["total_score"],
         }
     except requests.exceptions.HTTPError as e:
-        # If Fairplay custom fields don't exist in workspace, retry without them
+        # If Fairplay custom fields don't exist in workspace, retry without them.
+        # On second failure, also drop native fields (deal_intelligence, last_scored)
+        # in case the workspace doesn't have those either.
         if hasattr(e, 'response') and e.response is not None and e.response.status_code in (400, 422):
+            err_body = ""
+            try:
+                err_body = e.response.text or ""
+            except Exception:
+                pass
+            # First retry: drop missing fields based on error body
+            for field_slug in list(fairplay_fields.keys()) + list(native_fields.keys()):
+                if field_slug in err_body:
+                    values.pop(field_slug, None)
+            # Belt and suspenders: drop ALL fairplay_* fields since they likely don't exist
             for field_slug in fairplay_fields:
                 values.pop(field_slug, None)
             logger.warning("Fairplay custom fields not found in Attio workspace, retrying without them")
@@ -485,6 +518,35 @@ def create_deal(
                     "stage": stage,
                     "score": score_result["total_score"],
                 }
+            except requests.exceptions.HTTPError as e2:
+                # Second retry: also drop native fields (deal_intelligence, last_scored)
+                if hasattr(e2, 'response') and e2.response is not None and e2.response.status_code in (400, 422):
+                    for field_slug in native_fields:
+                        values.pop(field_slug, None)
+                    logger.warning("Native fields also unavailable, retrying with bare minimum (name + stage)")
+                    try:
+                        data = _attio_request(
+                            "POST",
+                            "/objects/deals/records",
+                            {"data": {"values": values}},
+                            api_key=api_key,
+                        )
+                        deal_id = data["data"]["id"]["record_id"]
+                        logger.info(f"Created Attio deal (bare minimum): {deal_name} (ID: {deal_id})")
+                        return {
+                            "deal_id": deal_id,
+                            "deal_name": deal_name,
+                            "deal_url": f"https://app.attio.com/deals/{deal_id}",
+                            "company_id": company_id,
+                            "associated_contacts": [cid for _, cid in contact_ids],
+                            "stage": stage,
+                            "score": score_result["total_score"],
+                        }
+                    except Exception as e3:
+                        logger.error(f"Failed to create Attio deal '{deal_name}' (final retry): {e3}")
+                        return None
+                logger.error(f"Failed to create Attio deal '{deal_name}' (retry): {e2}")
+                return None
             except Exception as e2:
                 logger.error(f"Failed to create Attio deal '{deal_name}' (retry): {e2}")
                 return None
