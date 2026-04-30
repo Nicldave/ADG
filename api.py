@@ -3593,6 +3593,104 @@ def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent
         database.put_conn(db)
 
 
+@app.get("/debug/attio-diagnostic")
+def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str = "Test Co"):
+    """Diagnose Attio integration: auth check, find_deal test, full create_deal dry run."""
+    import attio_client
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    crm_key = conn.get("crm_api_key", "")
+    if not crm_key:
+        return {"error": "No Attio API key on connection"}
+
+    results = {"connection": connection_name, "tests": {}}
+
+    # 1. Auth check via /self
+    try:
+        import requests as req_lib
+        from config import ATTIO_BASE_URL
+        resp = req_lib.get(
+            f"{ATTIO_BASE_URL}/self",
+            headers={"Authorization": f"Bearer {crm_key}"},
+            timeout=15,
+        )
+        results["tests"]["auth"] = {
+            "status_code": resp.status_code,
+            "ok": resp.ok,
+            "body": resp.json() if resp.ok else resp.text[:300],
+        }
+    except Exception as e:
+        results["tests"]["auth"] = {"error": str(e)}
+
+    # 2. Find deal by company name (exact path used in pipeline)
+    try:
+        existing = attio_client.find_deal_by_company(company_name, api_key=crm_key)
+        results["tests"]["find_deal_by_company"] = {
+            "company_name": company_name,
+            "existing_deal_returned": existing,
+        }
+    except Exception as e:
+        results["tests"]["find_deal_by_company"] = {"error": str(e), "type": type(e).__name__}
+
+    # 3. Query deals object directly to see what's in Attio
+    try:
+        import requests as req_lib
+        from config import ATTIO_BASE_URL
+        resp = req_lib.post(
+            f"{ATTIO_BASE_URL}/objects/deals/records/query",
+            headers={"Authorization": f"Bearer {crm_key}", "Content-Type": "application/json"},
+            json={"filter": {"name": {"$contains": company_name}}, "limit": 3},
+            timeout=15,
+        )
+        results["tests"]["deals_query"] = {
+            "status_code": resp.status_code,
+            "ok": resp.ok,
+            "result_count": len(resp.json().get("data", [])) if resp.ok else None,
+            "error_body": resp.text[:300] if not resp.ok else None,
+        }
+    except Exception as e:
+        results["tests"]["deals_query"] = {"error": str(e), "type": type(e).__name__}
+
+    # 4. Recently scored deals on this connection - check deal_id presence
+    if database.is_available():
+        db = database.get_conn()
+        if db:
+            try:
+                cur = db.cursor()
+                cur.execute("""
+                    SELECT deal_name, deal_id, score, recommendation, created_at
+                    FROM scored_deals
+                    WHERE metadata->>'connection_name' = %s
+                      AND recommendation = 'auto_create'
+                    ORDER BY created_at DESC LIMIT 5
+                """, (connection_name,))
+                rows = cur.fetchall()
+                cur.close()
+                results["tests"]["recent_auto_create_deals"] = [
+                    {
+                        "deal_name": r[0],
+                        "deal_id_present": bool(r[1]),
+                        "deal_id": r[1],
+                        "score": r[2],
+                        "created": str(r[4]),
+                    }
+                    for r in rows
+                ]
+            except Exception as e:
+                results["tests"]["recent_auto_create_deals"] = {"error": str(e)}
+            finally:
+                database.put_conn(db)
+
+    return results
+
+
 @app.get("/debug/connection-fingerprints")
 def debug_connection_fingerprints(connection_name: str = "My Team"):
     """Compare connections with the same name by API key fingerprints to identify true duplicates."""
