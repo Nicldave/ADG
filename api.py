@@ -3663,14 +3663,16 @@ def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str =
         import requests as req_lib
         from config import ATTIO_BASE_URL, ATTIO_DEAL_STAGE_QUALIFIED
         # Try minimal create — just name and stage, no Fairplay fields
+        # Hardcode "Discovery Attended" to test stage independent of config
         test_payload = {
             "data": {
                 "values": {
                     "name": [{"value": f"FAIRPLAY-DIAGNOSTIC-{datetime.now().strftime('%Y%m%d%H%M%S')}"}],
-                    "stage": [{"status": ATTIO_DEAL_STAGE_QUALIFIED}],
+                    "stage": [{"status": "Discovery Attended"}],
                 }
             }
         }
+        results["tests"]["config_stage_in_use"] = ATTIO_DEAL_STAGE_QUALIFIED
         resp = req_lib.post(
             f"{ATTIO_BASE_URL}/objects/deals/records",
             headers={"Authorization": f"Bearer {crm_key}", "Content-Type": "application/json"},
