@@ -3658,6 +3658,66 @@ def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str =
     except Exception as e:
         results["tests"]["deals_query"] = {"error": str(e), "type": type(e).__name__}
 
+    # 3b. Direct create_deal test with minimal payload
+    try:
+        import requests as req_lib
+        from config import ATTIO_BASE_URL, ATTIO_DEAL_STAGE_QUALIFIED
+        # Try minimal create — just name and stage, no Fairplay fields
+        test_payload = {
+            "data": {
+                "values": {
+                    "name": [{"value": f"FAIRPLAY-DIAGNOSTIC-{datetime.now().strftime('%Y%m%d%H%M%S')}"}],
+                    "stage": [{"status": ATTIO_DEAL_STAGE_QUALIFIED}],
+                }
+            }
+        }
+        resp = req_lib.post(
+            f"{ATTIO_BASE_URL}/objects/deals/records",
+            headers={"Authorization": f"Bearer {crm_key}", "Content-Type": "application/json"},
+            json=test_payload,
+            timeout=15,
+        )
+        results["tests"]["create_minimal"] = {
+            "status_code": resp.status_code,
+            "ok": resp.ok,
+            "body": resp.json() if resp.ok else resp.text[:600],
+        }
+    except Exception as e:
+        results["tests"]["create_minimal"] = {"error": str(e), "type": type(e).__name__}
+
+    # 3c. Try create with Fairplay custom fields to see if those are the problem
+    try:
+        import requests as req_lib
+        from config import (
+            ATTIO_BASE_URL, ATTIO_DEAL_STAGE_QUALIFIED,
+            ATTIO_FIELD_FAIRPLAY_SCORE, ATTIO_FIELD_FRAMEWORK,
+        )
+        test_payload = {
+            "data": {
+                "values": {
+                    "name": [{"value": f"FAIRPLAY-FIELD-TEST-{datetime.now().strftime('%H%M%S')}"}],
+                    "stage": [{"status": ATTIO_DEAL_STAGE_QUALIFIED}],
+                    ATTIO_FIELD_FAIRPLAY_SCORE: [{"value": 75}],
+                    ATTIO_FIELD_FRAMEWORK: [{"value": "BANT"}],
+                }
+            }
+        }
+        resp = req_lib.post(
+            f"{ATTIO_BASE_URL}/objects/deals/records",
+            headers={"Authorization": f"Bearer {crm_key}", "Content-Type": "application/json"},
+            json=test_payload,
+            timeout=15,
+        )
+        results["tests"]["create_with_fairplay_fields"] = {
+            "status_code": resp.status_code,
+            "ok": resp.ok,
+            "fairplay_score_slug": ATTIO_FIELD_FAIRPLAY_SCORE,
+            "framework_slug": ATTIO_FIELD_FRAMEWORK,
+            "body": resp.json() if resp.ok else resp.text[:600],
+        }
+    except Exception as e:
+        results["tests"]["create_with_fairplay_fields"] = {"error": str(e), "type": type(e).__name__}
+
     # 4. Recently scored deals on this connection - check deal_id presence
     if database.is_available():
         db = database.get_conn()
