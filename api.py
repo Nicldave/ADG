@@ -3718,6 +3718,37 @@ def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str =
     except Exception as e:
         results["tests"]["create_with_fairplay_fields"] = {"error": str(e), "type": type(e).__name__}
 
+    # 3d. Fetch actual Attio stages and attributes
+    try:
+        import requests as req_lib
+        from config import ATTIO_BASE_URL
+        # Get stage attribute options
+        attrs_resp = req_lib.get(
+            f"{ATTIO_BASE_URL}/objects/deals/attributes",
+            headers={"Authorization": f"Bearer {crm_key}"},
+            timeout=15,
+        )
+        attrs = attrs_resp.json().get("data", []) if attrs_resp.ok else []
+        stage_attr = next((a for a in attrs if a.get("slug") == "stage"), None)
+        results["tests"]["available_attributes"] = [
+            {"slug": a.get("slug"), "title": a.get("title"), "type": a.get("type")}
+            for a in attrs
+        ]
+        if stage_attr:
+            stage_id = stage_attr.get("id", {}).get("attribute_id")
+            opts_resp = req_lib.get(
+                f"{ATTIO_BASE_URL}/objects/deals/attributes/{stage_id}/statuses",
+                headers={"Authorization": f"Bearer {crm_key}"},
+                timeout=15,
+            )
+            opts = opts_resp.json().get("data", []) if opts_resp.ok else []
+            results["tests"]["available_stages"] = [
+                {"title": s.get("title"), "id": s.get("id", {}).get("status_id")}
+                for s in opts
+            ]
+    except Exception as e:
+        results["tests"]["stages_fetch"] = {"error": str(e)}
+
     # 4. Recently scored deals on this connection - check deal_id presence
     if database.is_available():
         db = database.get_conn()
