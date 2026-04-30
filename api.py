@@ -3731,9 +3731,11 @@ def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str =
         attrs = attrs_resp.json().get("data", []) if attrs_resp.ok else []
         stage_attr = next((a for a in attrs if a.get("slug") == "stage"), None)
         results["tests"]["available_attributes"] = [
-            {"slug": a.get("slug"), "title": a.get("title"), "type": a.get("type")}
+            {"slug": a.get("api_slug") or a.get("slug"), "title": a.get("title"), "type": a.get("type")}
             for a in attrs
         ]
+        # Re-find stage_attr using api_slug
+        stage_attr = next((a for a in attrs if (a.get("api_slug") or a.get("slug")) == "stage"), None)
         if stage_attr:
             stage_id = stage_attr.get("id", {}).get("attribute_id")
             opts_resp = req_lib.get(
@@ -3746,6 +3748,12 @@ def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str =
                 {"title": s.get("title"), "id": s.get("id", {}).get("status_id")}
                 for s in opts
             ]
+            results["tests"]["stages_raw_response"] = {
+                "status_code": opts_resp.status_code,
+                "ok": opts_resp.ok,
+                "first_3_raw": opts[:3] if opts else None,
+                "error_body": opts_resp.text[:500] if not opts_resp.ok else None,
+            }
     except Exception as e:
         results["tests"]["stages_fetch"] = {"error": str(e)}
 
