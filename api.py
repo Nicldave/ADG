@@ -3733,7 +3733,13 @@ def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str =
         attrs = attrs_resp.json().get("data", []) if attrs_resp.ok else []
         stage_attr = next((a for a in attrs if a.get("slug") == "stage"), None)
         results["tests"]["available_attributes"] = [
-            {"slug": a.get("api_slug") or a.get("slug"), "title": a.get("title"), "type": a.get("type")}
+            {
+                "slug": a.get("api_slug") or a.get("slug"),
+                "title": a.get("title"),
+                "type": a.get("type"),
+                "id": (a.get("id") or {}).get("attribute_id") if isinstance(a.get("id"), dict) else None,
+                "is_required": a.get("is_required"),
+            }
             for a in attrs
         ]
         # Re-find stage_attr using api_slug
