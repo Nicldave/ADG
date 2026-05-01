@@ -3822,6 +3822,41 @@ def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str =
     except Exception as e:
         results["tests"]["create_minimal"] = {"error": str(e), "type": type(e).__name__}
 
+    # 3b2. Try create with name + stage + owner (the actual minimum required)
+    try:
+        import requests as req_lib
+        from config import ATTIO_BASE_URL
+        # Get owner ID first
+        self_resp = req_lib.get(
+            f"{ATTIO_BASE_URL}/self",
+            headers={"Authorization": f"Bearer {crm_key}"},
+            timeout=15,
+        )
+        owner_id = self_resp.json().get("authorized_by_workspace_member_id") if self_resp.ok else None
+        test_payload = {
+            "data": {
+                "values": {
+                    "name": [{"value": f"FAIRPLAY-OWNERTEST-{datetime.now().strftime('%H%M%S')}"}],
+                    "stage": [{"status": "Discovery Attended"}],
+                    "owner": [{"referenced_actor_type": "workspace-member", "referenced_actor_id": owner_id}] if owner_id else [],
+                }
+            }
+        }
+        resp = req_lib.post(
+            f"{ATTIO_BASE_URL}/objects/deals/records",
+            headers={"Authorization": f"Bearer {crm_key}", "Content-Type": "application/json"},
+            json=test_payload,
+            timeout=15,
+        )
+        results["tests"]["create_with_owner"] = {
+            "status_code": resp.status_code,
+            "ok": resp.ok,
+            "owner_id_used": owner_id,
+            "body": resp.json() if resp.ok else resp.text[:600],
+        }
+    except Exception as e:
+        results["tests"]["create_with_owner"] = {"error": str(e), "type": type(e).__name__}
+
     # 3c. Try create with Fairplay custom fields to see if those are the problem
     try:
         import requests as req_lib
