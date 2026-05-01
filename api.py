@@ -3728,6 +3728,94 @@ def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent
         database.put_conn(db)
 
 
+@app.post("/debug/retry-attio-create")
+def debug_retry_attio_create(connection_name: str = "My Team", meeting_title: str = "Street Talk"):
+    """Take an existing scored_deals row and run create_deal against Attio with full payload. Surfaces actual errors."""
+    import attio_client
+    if not database.is_available():
+        return {"error": "DB not available"}
+
+    all_conns = connections.list_connections_full()
+    conn = None
+    for c in all_conns:
+        if c.get("name") == connection_name:
+            conn = c
+            break
+    if not conn:
+        return {"error": f"Connection '{connection_name}' not found"}
+
+    db = database.get_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("""
+            SELECT deal_name, score, recommendation, framework, breakdown, analysis, metadata, key_insight, company_name
+            FROM scored_deals
+            WHERE meeting_title ILIKE %s
+            ORDER BY created_at DESC LIMIT 1
+        """, (f"%{meeting_title}%",))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return {"error": "No scored deal found"}
+        deal_name, score, rec, framework, breakdown, analysis_blob, metadata_blob, key_insight, company_name = row
+    finally:
+        database.put_conn(db)
+
+    # Reconstruct score_result and analysis as create_deal expects
+    score_result = {
+        "total_score": score,
+        "recommendation": rec,
+        "framework": framework,
+        "breakdown": breakdown if isinstance(breakdown, dict) else {},
+        "key_insight": key_insight,
+        "deal_name_suggestion": deal_name,
+    }
+    analysis = analysis_blob if isinstance(analysis_blob, dict) else {}
+    if "prospect_company" not in analysis:
+        analysis["prospect_company"] = {"name": company_name}
+    metadata = metadata_blob if isinstance(metadata_blob, dict) else {}
+    metadata["touchpoints"] = 1
+
+    # Capture all create_deal log output by hooking the requests module to surface raw HTTP errors
+    import requests as req_lib
+    captured_errors = []
+    original_request = req_lib.Session.request
+
+    def wrapped_request(self, method, url, **kwargs):
+        resp = original_request(self, method, url, **kwargs)
+        if "attio" in url and resp.status_code >= 400:
+            captured_errors.append({
+                "method": method,
+                "url": url,
+                "status": resp.status_code,
+                "body": resp.text[:600],
+                "request_body": kwargs.get("json") if isinstance(kwargs.get("json"), dict) else None,
+            })
+        return resp
+
+    req_lib.Session.request = wrapped_request
+    try:
+        stage_q, stage_r = _get_connection_stages(conn, "attio")
+        result = attio_client.create_deal(
+            score_result, analysis, metadata,
+            dry_run=False, api_key=conn.get("crm_api_key"),
+            stage_qualified=stage_q, stage_review=stage_r,
+        )
+    except Exception as e:
+        result = {"exception": str(e), "type": type(e).__name__}
+    finally:
+        req_lib.Session.request = original_request
+
+    return {
+        "stage_qualified": stage_q,
+        "stage_review": stage_r,
+        "create_deal_result": result,
+        "captured_attio_errors": captured_errors,
+        "deal_name": deal_name,
+        "company_name": company_name,
+    }
+
+
 @app.get("/debug/attio-diagnostic")
 def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str = "Test Co"):
     """Diagnose Attio integration: auth check, find_deal test, full create_deal dry run."""
