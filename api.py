@@ -3728,6 +3728,65 @@ def debug_resend_notification(meeting_title: str, connection_name: str = "Ascent
         database.put_conn(db)
 
 
+@app.get("/debug/attio-test-deals")
+def debug_attio_test_deals(connection_name: str = "My Team"):
+    """Find any test deals in Attio created during diagnostics (FAIRPLAY-* prefix)."""
+    import requests as req_lib
+    from config import ATTIO_BASE_URL
+
+    all_conns = connections.list_connections_full()
+    conn = next((c for c in all_conns if c.get("name") == connection_name), None)
+    if not conn:
+        return {"error": "Connection not found"}
+    crm_key = conn.get("crm_api_key", "")
+
+    test_deals = []
+    for prefix in ["FAIRPLAY-DIAGNOSTIC", "FAIRPLAY-OWNERTEST", "FAIRPLAY-FIELD-TEST"]:
+        try:
+            resp = req_lib.post(
+                f"{ATTIO_BASE_URL}/objects/deals/records/query",
+                headers={"Authorization": f"Bearer {crm_key}", "Content-Type": "application/json"},
+                json={"filter": {"name": {"$contains": prefix}}, "limit": 10},
+                timeout=15,
+            )
+            if resp.ok:
+                for d in resp.json().get("data", []):
+                    name = d.get("values", {}).get("name", [{}])[0].get("value", "")
+                    test_deals.append({
+                        "id": d["id"]["record_id"],
+                        "name": name,
+                        "created": d.get("created_at", ""),
+                    })
+        except Exception:
+            pass
+    return {"test_deals": test_deals, "count": len(test_deals)}
+
+
+@app.delete("/debug/attio-deal/{record_id}")
+def debug_delete_attio_deal(record_id: str, connection_name: str = "My Team", confirm: str = ""):
+    """Delete an Attio deal by record_id. Requires confirm=YES."""
+    if confirm != "YES":
+        return {"error": "Pass confirm=YES"}
+    import requests as req_lib
+    from config import ATTIO_BASE_URL
+
+    all_conns = connections.list_connections_full()
+    conn = next((c for c in all_conns if c.get("name") == connection_name), None)
+    if not conn:
+        return {"error": "Connection not found"}
+    crm_key = conn.get("crm_api_key", "")
+
+    try:
+        resp = req_lib.delete(
+            f"{ATTIO_BASE_URL}/objects/deals/records/{record_id}",
+            headers={"Authorization": f"Bearer {crm_key}"},
+            timeout=15,
+        )
+        return {"status_code": resp.status_code, "ok": resp.ok, "deleted_id": record_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/debug/retry-attio-create")
 def debug_retry_attio_create(connection_name: str = "My Team", meeting_title: str = "Street Talk"):
     """Take an existing scored_deals row and run create_deal against Attio with full payload. Surfaces actual errors."""
