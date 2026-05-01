@@ -30,6 +30,8 @@ _CONN_FIELDS = [
     "fathom_api_key",
     "sale_type", "deal_value_range", "avg_days_to_close", "industry_vertical",
     "company_website", "company_icp", "framework_weights", "calibration_notes",
+    "attio_stage_qualified", "attio_stage_review",
+    "hubspot_stage_qualified", "hubspot_stage_review",
 ]
 
 

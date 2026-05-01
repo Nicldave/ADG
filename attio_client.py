@@ -311,6 +311,8 @@ def create_deal(
     metadata: Optional[dict] = None,
     dry_run: bool = False,
     api_key: Optional[str] = None,
+    stage_qualified: Optional[str] = None,
+    stage_review: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Create an Attio deal from a scored transcript analysis.
@@ -320,6 +322,8 @@ def create_deal(
         analysis: Output from transcript_analyzer.analyze_transcript()
         metadata: Meeting metadata (title, date, participants, etc.)
         dry_run: If True, log what would be created without making API calls.
+        stage_qualified: Override stage name for auto_create deals (per-connection).
+        stage_review: Override stage name for needs_review deals (per-connection).
 
     Returns:
         Dict with deal_id, deal_url, company_id, associated_contacts on success.
@@ -327,11 +331,10 @@ def create_deal(
     """
     deal_name = score_result.get("deal_name_suggestion", "New Deal")
     recommendation = score_result.get("recommendation", "needs_review")
-    stage = (
-        ATTIO_DEAL_STAGE_QUALIFIED
-        if recommendation == "auto_create"
-        else ATTIO_DEAL_STAGE_REVIEW
-    )
+    # Per-connection override > env config default
+    qualified_name = stage_qualified or ATTIO_DEAL_STAGE_QUALIFIED
+    review_name = stage_review or ATTIO_DEAL_STAGE_REVIEW
+    stage = qualified_name if recommendation == "auto_create" else review_name
 
     if dry_run:
         logger.info(f"[DRY RUN] Would create Attio deal: {deal_name} (stage: {stage})")

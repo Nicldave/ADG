@@ -974,8 +974,10 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             is_shadow = conn.get("shadow_mode", False)
             metadata["touchpoints"] = len(previous_scores) + 1
             crm_client = crm_factory.get_client(crm_name)
+            stage_q, stage_r = _get_connection_stages(conn, crm_name)
             result = crm_client.create_deal(
-                score_result, analysis, metadata, dry_run=is_shadow, api_key=crm_key
+                score_result, analysis, metadata, dry_run=is_shadow, api_key=crm_key,
+                stage_qualified=stage_q, stage_review=stage_r,
             )
             if result and not is_shadow:
                 deal_id = result.get("deal_id")
@@ -1114,6 +1116,137 @@ def _calculate_cumulative_score(current_breakdown: dict, previous_scores: list) 
     cumulative_total = min(100, cumulative_total)
 
     return {"score": cumulative_total, "breakdown": best_per_category}
+
+
+@app.get("/connections/{webhook_id}/crm-stages", dependencies=[Depends(require_api_key)])
+def get_crm_stages(webhook_id: str):
+    """List the prospect's CRM pipeline stages so they can pick which one Fairplay uses."""
+    conn = connections.get_connection(webhook_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    crm_name = conn.get("crm", "attio")
+    crm_key = conn.get("crm_api_key", "")
+    if not crm_key:
+        raise HTTPException(status_code=400, detail="No CRM API key configured")
+
+    import requests as req_lib
+
+    if crm_name == "attio":
+        from config import ATTIO_BASE_URL
+        try:
+            attrs_resp = req_lib.get(
+                f"{ATTIO_BASE_URL}/objects/deals/attributes",
+                headers={"Authorization": f"Bearer {crm_key}"},
+                timeout=15,
+            )
+            attrs_resp.raise_for_status()
+            attrs = attrs_resp.json().get("data", [])
+            stage_attr = next((a for a in attrs if (a.get("api_slug") or a.get("slug")) == "stage"), None)
+            if not stage_attr:
+                return {"stages": [], "error": "Stage attribute not found"}
+            stage_id = (stage_attr.get("id") or {}).get("attribute_id")
+            opts_resp = req_lib.get(
+                f"{ATTIO_BASE_URL}/objects/deals/attributes/{stage_id}/statuses",
+                headers={"Authorization": f"Bearer {crm_key}"},
+                timeout=15,
+            )
+            opts_resp.raise_for_status()
+            opts = opts_resp.json().get("data", [])
+            stage_names = [s.get("title") for s in opts if s.get("title")]
+            current_q, current_r = _get_connection_stages(conn, "attio")
+            # Auto-suggest first non-closed stage if none set
+            closed_kw = ("won", "lost", "closed", "former")
+            suggested = next((s for s in stage_names if not any(k in s.lower() for k in closed_kw)), stage_names[0] if stage_names else None)
+            return {
+                "crm": "attio",
+                "stages": stage_names,
+                "current_qualified": current_q,
+                "current_review": current_r,
+                "suggested": suggested,
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch Attio stages: {e}")
+
+    if crm_name == "hubspot":
+        from config import HUBSPOT_BASE_URL
+        try:
+            # HubSpot pipelines endpoint
+            resp = req_lib.get(
+                f"{HUBSPOT_BASE_URL}/crm/v3/pipelines/deals",
+                headers={"Authorization": f"Bearer {crm_key}"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            pipelines = resp.json().get("results", [])
+            stages_by_pipeline = []
+            for p in pipelines:
+                stages_by_pipeline.append({
+                    "pipeline_id": p.get("id"),
+                    "pipeline_label": p.get("label"),
+                    "stages": [
+                        {"id": s.get("id"), "label": s.get("label")}
+                        for s in p.get("stages", [])
+                    ],
+                })
+            current_q, current_r = _get_connection_stages(conn, "hubspot")
+            return {
+                "crm": "hubspot",
+                "pipelines": stages_by_pipeline,
+                "current_qualified": current_q,
+                "current_review": current_r,
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch HubSpot pipelines: {e}")
+
+    return {"crm": crm_name, "stages": [], "note": "Stage discovery not yet supported for this CRM"}
+
+
+class StagesUpdate(BaseModel):
+    stage_qualified: Optional[str] = None
+    stage_review: Optional[str] = None
+
+
+@app.put("/connections/{webhook_id}/crm-stages", dependencies=[Depends(require_api_key)])
+def update_crm_stages(webhook_id: str, req: StagesUpdate):
+    """Set per-connection CRM stage names. Persists across all CRM types."""
+    conn = connections.get_connection(webhook_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    crm_name = conn.get("crm", "attio")
+    updates = {}
+    if crm_name == "attio":
+        if req.stage_qualified is not None:
+            updates["attio_stage_qualified"] = req.stage_qualified
+        if req.stage_review is not None:
+            updates["attio_stage_review"] = req.stage_review
+    elif crm_name == "hubspot":
+        if req.stage_qualified is not None:
+            updates["hubspot_stage_qualified"] = req.stage_qualified
+        if req.stage_review is not None:
+            updates["hubspot_stage_review"] = req.stage_review
+    else:
+        raise HTTPException(status_code=400, detail=f"Stage config not supported for CRM: {crm_name}")
+
+    if updates:
+        connections.update_connection(webhook_id, updates)
+
+    refreshed = connections.get_connection(webhook_id)
+    return {
+        "crm": crm_name,
+        "stage_qualified": refreshed.get(f"{crm_name}_stage_qualified", ""),
+        "stage_review": refreshed.get(f"{crm_name}_stage_review", ""),
+    }
+
+
+def _get_connection_stages(conn: dict, crm_name: str) -> tuple:
+    """Return (stage_qualified, stage_review) for a connection. Falls back to env defaults."""
+    if crm_name == "attio":
+        return (conn.get("attio_stage_qualified") or None, conn.get("attio_stage_review") or None)
+    if crm_name == "hubspot":
+        return (conn.get("hubspot_stage_qualified") or None, conn.get("hubspot_stage_review") or None)
+    return (None, None)
 
 
 def _find_existing_deal(company_name: str, crm_name: str, crm_key: Optional[str] = None) -> Optional[dict]:
@@ -2009,8 +2142,10 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
             is_shadow = conn.get("shadow_mode", False)
             metadata["touchpoints"] = len(previous_scores) + 1
             crm_client = crm_factory.get_client(crm_name)
+            stage_q, stage_r = _get_connection_stages(conn, crm_name)
             result = crm_client.create_deal(
-                score_result, analysis, metadata, dry_run=is_shadow, api_key=crm_key
+                score_result, analysis, metadata, dry_run=is_shadow, api_key=crm_key,
+                stage_qualified=stage_q, stage_review=stage_r,
             )
             if result and not is_shadow:
                 deal_id = result.get("deal_id")

@@ -302,11 +302,15 @@ def _build_deal_properties(
     analysis: dict,
     metadata: Optional[dict],
     stage_override: Optional[str] = None,
+    stage_qualified: Optional[str] = None,
+    stage_review: Optional[str] = None,
 ) -> dict:
     """Build the HubSpot deal properties dict from score and analysis data."""
     recommendation = score_result.get("recommendation", "needs_review")
+    qualified_name = stage_qualified or HUBSPOT_STAGE_QUALIFIED
+    review_name = stage_review or HUBSPOT_STAGE_REVIEW
     stage = stage_override or (
-        HUBSPOT_STAGE_QUALIFIED if recommendation == "auto_create" else HUBSPOT_STAGE_REVIEW
+        qualified_name if recommendation == "auto_create" else review_name
     )
 
     # Deal name
@@ -465,6 +469,8 @@ def create_deal(
     metadata: Optional[dict] = None,
     dry_run: bool = False,
     api_key: Optional[str] = None,
+    stage_qualified: Optional[str] = None,
+    stage_review: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Create a HubSpot deal from a scored transcript analysis.
@@ -482,7 +488,7 @@ def create_deal(
     deal_name = score_result.get("deal_name_suggestion", "New Deal")
 
     if dry_run:
-        properties = _build_deal_properties(score_result, analysis, metadata)
+        properties = _build_deal_properties(score_result, analysis, metadata, stage_qualified=stage_qualified, stage_review=stage_review)
         logger.info(f"[DRY RUN] Would create deal: {deal_name}")
         logger.info(f"[DRY RUN] Properties: {json.dumps(properties, indent=2)}")
         return {"dry_run": True, "deal_name": deal_name}
@@ -496,7 +502,7 @@ def create_deal(
         )
 
     # Build deal properties
-    properties = _build_deal_properties(score_result, analysis, metadata)
+    properties = _build_deal_properties(score_result, analysis, metadata, stage_qualified=stage_qualified, stage_review=stage_review)
 
     # Create the deal
     deal_data = _hs_request(
