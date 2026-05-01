@@ -46,7 +46,7 @@ ATTIO_DEAL_STAGE_REVIEW = os.getenv("ATTIO_DEAL_STAGE_REVIEW", "Discovery Attend
 ATTIO_FIELD_DEAL_INTELLIGENCE = os.getenv("ATTIO_FIELD_DEAL_INTELLIGENCE", "deal_intelligence")
 ATTIO_FIELD_LAST_SCORED = os.getenv("ATTIO_FIELD_LAST_SCORED", "last_scored")
 # Relationship attribute slugs — check your Attio workspace settings if associations fail
-ATTIO_DEAL_COMPANY_ATTR = os.getenv("ATTIO_DEAL_COMPANY_ATTR", "associated_workspace_member")
+ATTIO_DEAL_COMPANY_ATTR = os.getenv("ATTIO_DEAL_COMPANY_ATTR", "associated_company")
 ATTIO_DEAL_PEOPLE_ATTR = os.getenv("ATTIO_DEAL_PEOPLE_ATTR", "associated_people")
 
 # Attio Fairplay custom fields (configure slugs per workspace)
