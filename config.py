@@ -62,7 +62,7 @@ ATTIO_FIELD_TOUCHPOINTS = os.getenv("ATTIO_FIELD_TOUCHPOINTS", "fairplay_touchpo
 ATTIO_FIELD_REVIEW_STATUS = os.getenv("ATTIO_FIELD_REVIEW_STATUS", "fairplay_review_status")
 
 # Claude model for transcript analysis
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # Deal Scoring Thresholds
 AUTO_CREATE_THRESHOLD = 70  # Score >= 70: auto-create deal
