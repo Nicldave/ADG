@@ -4790,10 +4790,14 @@ def dashboard_stats(user: dict = Depends(require_user)):
 
 # ── Org Health Alert ──────────────────────────────────────────────────────────
 
+ORG_HEALTH_THRESHOLD_PCT = 20.0  # alert when >20% of conversations land in needs_review
+ORG_HEALTH_COOLDOWN_DAYS = 7  # don't re-alert the same connection within this window
+
+
 def _check_org_health(conn: dict):
     """
-    Check if >15% of recent conversations land in Needs Review for a connection.
-    If so, alert admin via Slack/Teams that framework thresholds may need recalibration.
+    Check if needs_review rate is materially elevated for a connection.
+    Fires once per 7-day cooldown to avoid daily repeat alerts on the same numbers.
     """
     if not database.is_available():
         return
@@ -4821,12 +4825,29 @@ def _check_org_health(conn: dict):
         review_count = sum(r[1] for r in rows if r[0] == "needs_review")
         review_pct = (review_count / total) * 100
 
-        if review_pct <= 15:
+        if review_pct <= ORG_HEALTH_THRESHOLD_PCT:
             return
+
+        # Cooldown: skip if we already alerted this connection within the cooldown window
+        last_alert = conn.get("last_org_health_alert")
+        if last_alert:
+            try:
+                from datetime import timezone, timedelta
+                if isinstance(last_alert, str):
+                    last_alert_dt = datetime.fromisoformat(last_alert.replace("Z", "+00:00"))
+                else:
+                    last_alert_dt = last_alert
+                if last_alert_dt.tzinfo is None:
+                    last_alert_dt = last_alert_dt.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) - last_alert_dt < timedelta(days=ORG_HEALTH_COOLDOWN_DAYS):
+                    logger.info(f"[{conn_name}] Org health alert in cooldown ({last_alert_dt}), skipping")
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to parse last_org_health_alert: {e}")
 
         import requests as req_lib
         alert_msg = (
-            f"{review_count} of {total} conversations ({review_pct:.0f}%) landed in Needs Review "
+            f"{review_count} of {total} conversations ({review_pct:.1f}%) landed in Needs Review "
             f"over the last 30 days. This may indicate that framework thresholds need recalibration. "
             f"Consider adjusting the auto-create threshold or framework weights in Settings."
         )
@@ -4855,7 +4876,13 @@ def _check_org_health(conn: dict):
             except Exception:
                 pass
 
-        logger.info(f"[{conn_name}] Org health alert: {review_pct:.0f}% needs review ({review_count}/{total})")
+        logger.info(f"[{conn_name}] Org health alert: {review_pct:.1f}% needs review ({review_count}/{total})")
+
+        # Record the alert timestamp on the connection to enforce the 7-day cooldown
+        try:
+            connections.update_connection(conn["webhook_id"], {"last_org_health_alert": datetime.now().isoformat()})
+        except Exception as e:
+            logger.warning(f"Failed to record last_org_health_alert: {e}")
     except Exception as e:
         logger.warning(f"Org health check failed: {e}")
     finally:

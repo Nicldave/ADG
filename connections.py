@@ -32,6 +32,7 @@ _CONN_FIELDS = [
     "company_website", "company_icp", "framework_weights", "calibration_notes",
     "attio_stage_qualified", "attio_stage_review",
     "hubspot_stage_qualified", "hubspot_stage_review",
+    "last_org_health_alert",
 ]
 
 

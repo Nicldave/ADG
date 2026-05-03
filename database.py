@@ -236,6 +236,12 @@ def init_db():
                     ALTER TABLE connections ADD COLUMN hubspot_stage_qualified TEXT DEFAULT '';
                     ALTER TABLE connections ADD COLUMN hubspot_stage_review TEXT DEFAULT '';
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'connections' AND column_name = 'last_org_health_alert'
+                ) THEN
+                    ALTER TABLE connections ADD COLUMN last_org_health_alert TIMESTAMPTZ;
+                END IF;
             END $$;
         """)
         conn.commit()
