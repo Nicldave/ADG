@@ -1,0 +1,36 @@
+name: Fairplay Poller
+
+# Hits the /poll-now endpoint on Railway every 15 minutes so the
+# transcript poller runs reliably regardless of whether the in-process
+# APScheduler thread is alive. APScheduler in a single-instance FastAPI
+# app on Railway can stall when the container goes idle; this workflow
+# is the failsafe.
+
+on:
+  schedule:
+    # Every 15 minutes. Note: GitHub Actions cron can be delayed by
+    # 5-10 min during high load, but the 15-min cadence still keeps
+    # the poller responsive.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:  # allow manual runs from GitHub UI
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger Fairplay poll
+        run: |
+          set -e
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://web-production-9afb1.up.railway.app/poll-now" \
+            -H "X-API-Key: ${{ secrets.FAIRPLAY_API_KEY }}" \
+            --max-time 240)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          STATUS=$(echo "$RESPONSE" | tail -n 1)
+          echo "Status: $STATUS"
+          echo "Body: $BODY"
+          if [ "$STATUS" != "200" ]; then
+            echo "Poll failed with status $STATUS"
+            exit 1
+          fi
