@@ -36,19 +36,20 @@ from config import AUTO_CREATE_THRESHOLD, REVIEW_THRESHOLD
 logger = logging.getLogger(__name__)
 
 # ── API Key Authentication ───────────────────────────────────────────────────
-# Set DEALSMART_API_KEY env var on Railway. Share this key with clients.
+# Set FAIRPLAY_API_KEY env var on Railway. Share this key with clients.
+# Falls back to DEALSMART_API_KEY for backwards compatibility during rename.
 # Webhooks are excluded (they use unique IDs for security).
 
-DEALSMART_API_KEY = os.getenv("DEALSMART_API_KEY", "")
+FAIRPLAY_API_KEY = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 async def require_api_key(api_key: str = Security(api_key_header)):
     """Dependency that enforces API key auth on protected endpoints."""
-    if not DEALSMART_API_KEY:
+    if not FAIRPLAY_API_KEY:
         return  # No key configured = auth disabled (dev mode)
-    if api_key != DEALSMART_API_KEY:
+    if api_key != FAIRPLAY_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -153,7 +154,7 @@ def _check_rate_limit(request: Request):
         return
     # Skip if API key auth is valid
     api_key = request.headers.get("x-api-key", "")
-    dealsmart_key = os.getenv("DEALSMART_API_KEY", "")
+    dealsmart_key = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")
     if dealsmart_key and api_key == dealsmart_key:
         return
 
@@ -466,7 +467,7 @@ def create_connection(req: ConnectionRequest, request: Request):
     # Allow either API key or session auth
     user = _get_user_from_session(request)
     api_key = request.headers.get("x-api-key", "")
-    dealsmart_key = os.getenv("DEALSMART_API_KEY", "")
+    dealsmart_key = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")
     if not user and not (dealsmart_key and api_key == dealsmart_key) and dealsmart_key:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -562,7 +563,7 @@ def update_connection_endpoint(webhook_id: str, updates: dict, request: Request)
     """Update a connection. Use to toggle shadow_mode, change framework, etc."""
     user = _get_user_from_session(request)
     api_key = request.headers.get("x-api-key", "")
-    dealsmart_key = os.getenv("DEALSMART_API_KEY", "")
+    dealsmart_key = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")
     if not user and not (dealsmart_key and api_key == dealsmart_key) and dealsmart_key:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
