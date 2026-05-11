@@ -679,6 +679,37 @@ def demo_generate_icp(req: GenerateICPRequest, request: Request):
 
 # ── Helpers: dedup, error alerting, default connection ────────────────────────
 
+def _meeting_already_scored(meeting_title: str, meeting_date: str, connection_name: str) -> bool:
+    """
+    Check if a meeting (by title + date + connection) has already been scored.
+    Catches Fireflies' habit of generating multiple transcript IDs for the same meeting.
+    Compares within a 24-hour date window to be safe.
+    """
+    if not meeting_title or not database.is_available():
+        return False
+    conn = database.get_conn()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        # Match meeting_title exact match, processed within the last 7 days on same connection
+        cur.execute("""
+            SELECT 1 FROM scored_deals
+            WHERE meeting_title = %s
+              AND metadata->>'connection_name' = %s
+              AND created_at > NOW() - INTERVAL '7 days'
+            LIMIT 1
+        """, (meeting_title, connection_name))
+        row = cur.fetchone()
+        cur.close()
+        return row is not None
+    except Exception as e:
+        logger.warning(f"Meeting-title dedup check failed: {e}")
+        return False
+    finally:
+        database.put_conn(conn)
+
+
 def _is_processed(transcript_id: str, connection_name: str = "Default") -> bool:
     """Check if a transcript has been successfully processed. Allows retries through."""
     if database.is_available():
@@ -886,6 +917,15 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
 
         text = fireflies_client.format_transcript_text(transcript)
         metadata = fireflies_client.get_meeting_metadata(transcript) if transcript else {}
+
+        # Meeting-title dedup: Fireflies sometimes generates multiple transcript IDs for the same meeting.
+        # If another transcript with the same title+date+connection has been scored successfully, skip this one.
+        meeting_title = metadata.get("title", "")
+        meeting_date = metadata.get("date", "")
+        if meeting_title and _meeting_already_scored(meeting_title, meeting_date, conn_name):
+            logger.info(f"[{conn_name}] Meeting '{meeting_title}' already scored under a different transcript ID, marking duplicate as success and skipping")
+            _mark_processed(transcript_id, conn_name, status="success")
+            return
 
         if not text or len(text) < 500:
             conn_name = conn.get("name", "Default")
@@ -3283,14 +3323,11 @@ def _poll_all_connections():
     except Exception as e:
         logger.warning(f"Failed to list connections for polling: {e}")
 
-    # If no registered connections, use default env var connection (Fireflies)
+    # NOTE: Default env-var fallback REMOVED to prevent duplicate parallel scoring.
+    # Each customer must explicitly register a connection. If no registered
+    # connections are pollable, we simply skip the cycle.
     if not conns_to_poll:
-        default = _build_default_connection()
-        if default.get("fireflies_api_key"):
-            conns_to_poll.append(default)
-
-    if not conns_to_poll:
-        logger.info("No pollable connections found, skipping")
+        logger.info("No registered, pollable connections found, skipping polling cycle")
         return
 
     lookback = datetime.now() - __import__("datetime").timedelta(minutes=POLLING_INTERVAL_MINUTES * 2)

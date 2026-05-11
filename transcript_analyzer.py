@@ -44,8 +44,14 @@ You must be precise and evidence-based. Every field you fill in must be backed b
 - **other**: Doesn't fit above categories
 
 ## Sales Conversation Rules
+
+**CRITICAL: Identify the seller's role first.** The Company Profile / Business Context section below describes
+what THIS team sells. They are always the seller in conversations on this account. The prospect is the OTHER
+party. If a Company Profile or Business Context section appears in this prompt, the connection owner is the
+seller — do not assume otherwise based on transcript content alone.
+
 Set is_sales_conversation to TRUE only if:
-- One party is actively selling a product or service to the other
+- The connection owner (the seller, per Company Profile) is actively selling THEIR product/service to the other party
 - There is a prospect company that could become a paying customer
 - The conversation involves evaluating fit, discussing pricing, or scoping work
 
@@ -53,9 +59,11 @@ Set is_sales_conversation to FALSE if:
 - This is a job interview or candidate screening (recruiting)
 - This is an internal team meeting
 - Both parties work for the same company
-- The company is being sold TO (vendor evaluation, the company is the buyer not the seller)
+- **The connection owner is the BUYER in this call** (e.g., hiring a contractor, evaluating a vendor for their own use, sourcing services from someone else). Even if the OTHER party is selling something, this is NOT a sales conversation for this account because the connection owner is not selling here.
 - This is a networking, partnership, or referral conversation
 - This is a coaching, mentoring, or advisory session with no sales intent
+
+**Common buyer-side meetings to mark FALSE:** hiring a designer, agency, freelancer, accountant, recruiter, or any vendor; evaluating a SaaS tool for internal use; meeting with a contractor about services for the owner's own business.
 
 ## Additional Signals to Extract
 When analyzing the conversation, also evaluate:
