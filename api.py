@@ -60,19 +60,6 @@ def _safe_key_summary(key: str) -> dict:
     }
 
 
-@app.get("/debug/auth")
-def debug_auth(x_api_key: Optional[str] = None):
-    """Surface lengths/prefixes of env-var key vs incoming header so mismatches are visible without leaking the secret."""
-    from fastapi import Request
-    env_fairplay = os.getenv("FAIRPLAY_API_KEY", "")
-    env_dealsmart = os.getenv("DEALSMART_API_KEY", "")
-    return {
-        "FAIRPLAY_API_KEY_env": _safe_key_summary(env_fairplay),
-        "DEALSMART_API_KEY_env": _safe_key_summary(env_dealsmart),
-        "in_use": _safe_key_summary(FAIRPLAY_API_KEY),
-    }
-
-
 async def require_api_key(api_key: str = Security(api_key_header)):
     """Dependency that enforces API key auth on protected endpoints."""
     if not FAIRPLAY_API_KEY:
@@ -5507,6 +5494,18 @@ def resolve_needs_review(deal_db_id: int, action: str = "approve"):
 
 
 # ── Health check ─────────────────────────────────────────────────────────────
+
+@app.get("/debug/auth")
+def debug_auth():
+    """Surface lengths/prefixes of env-var key vs in-use key so mismatches are visible without leaking the secret."""
+    env_fairplay = os.getenv("FAIRPLAY_API_KEY", "")
+    env_dealsmart = os.getenv("DEALSMART_API_KEY", "")
+    return {
+        "FAIRPLAY_API_KEY_env": _safe_key_summary(env_fairplay),
+        "DEALSMART_API_KEY_env": _safe_key_summary(env_dealsmart),
+        "in_use": _safe_key_summary(FAIRPLAY_API_KEY),
+    }
+
 
 @app.get("/health")
 def health():
