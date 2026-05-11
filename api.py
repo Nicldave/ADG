@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Falls back to DEALSMART_API_KEY for backwards compatibility during rename.
 # Webhooks are excluded (they use unique IDs for security).
 
-FAIRPLAY_API_KEY = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")
+FAIRPLAY_API_KEY = (os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")).strip()
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -169,7 +169,7 @@ def _check_rate_limit(request: Request):
         return
     # Skip if API key auth is valid
     api_key = request.headers.get("x-api-key", "")
-    dealsmart_key = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")
+    dealsmart_key = (os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")).strip()
     if dealsmart_key and api_key == dealsmart_key:
         return
 
@@ -482,7 +482,7 @@ def create_connection(req: ConnectionRequest, request: Request):
     # Allow either API key or session auth
     user = _get_user_from_session(request)
     api_key = request.headers.get("x-api-key", "")
-    dealsmart_key = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")
+    dealsmart_key = (os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")).strip()
     if not user and not (dealsmart_key and api_key == dealsmart_key) and dealsmart_key:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -578,7 +578,7 @@ def update_connection_endpoint(webhook_id: str, updates: dict, request: Request)
     """Update a connection. Use to toggle shadow_mode, change framework, etc."""
     user = _get_user_from_session(request)
     api_key = request.headers.get("x-api-key", "")
-    dealsmart_key = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")
+    dealsmart_key = (os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API_KEY", "")).strip()
     if not user and not (dealsmart_key and api_key == dealsmart_key) and dealsmart_key:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
