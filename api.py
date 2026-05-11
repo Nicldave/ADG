@@ -45,6 +45,34 @@ FAIRPLAY_API_KEY = os.getenv("FAIRPLAY_API_KEY", "") or os.getenv("DEALSMART_API
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
+def _safe_key_summary(key: str) -> dict:
+    """Return non-secret diagnostics for a key value."""
+    if not key:
+        return {"set": False, "length": 0, "prefix": "", "suffix": "", "has_whitespace": False}
+    stripped = key.strip()
+    return {
+        "set": True,
+        "length": len(key),
+        "stripped_length": len(stripped),
+        "prefix": key[:8],
+        "suffix": key[-4:],
+        "has_whitespace": len(key) != len(stripped),
+    }
+
+
+@app.get("/debug/auth")
+def debug_auth(x_api_key: Optional[str] = None):
+    """Surface lengths/prefixes of env-var key vs incoming header so mismatches are visible without leaking the secret."""
+    from fastapi import Request
+    env_fairplay = os.getenv("FAIRPLAY_API_KEY", "")
+    env_dealsmart = os.getenv("DEALSMART_API_KEY", "")
+    return {
+        "FAIRPLAY_API_KEY_env": _safe_key_summary(env_fairplay),
+        "DEALSMART_API_KEY_env": _safe_key_summary(env_dealsmart),
+        "in_use": _safe_key_summary(FAIRPLAY_API_KEY),
+    }
+
+
 async def require_api_key(api_key: str = Security(api_key_header)):
     """Dependency that enforces API key auth on protected endpoints."""
     if not FAIRPLAY_API_KEY:
