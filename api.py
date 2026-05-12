@@ -3976,13 +3976,18 @@ def debug_attio_companies_schema(connection_name: str = "My Team"):
         lifecycle_statuses = []
         if lifecycle_attr:
             attr_id = (lifecycle_attr.get("id") or {}).get("attribute_id")
+            attr_type = lifecycle_attr.get("type")
+            # select-type uses /options, status-type uses /statuses
+            endpoint = "options" if attr_type == "select" else "statuses"
             opts_resp = req_lib.get(
-                f"{ATTIO_BASE_URL}/objects/companies/attributes/{attr_id}/statuses",
+                f"{ATTIO_BASE_URL}/objects/companies/attributes/{attr_id}/{endpoint}",
                 headers=headers,
                 timeout=15,
             )
             if opts_resp.ok:
                 lifecycle_statuses = [s.get("title") for s in opts_resp.json().get("data", []) if s.get("title")]
+            else:
+                lifecycle_statuses = [f"error fetching {endpoint}: {opts_resp.status_code} {opts_resp.text[:200]}"]
         return {
             "attributes": attribute_list,
             "lifecycle_attribute_found": lifecycle_attr is not None,
