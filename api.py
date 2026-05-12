@@ -1377,9 +1377,15 @@ def _send_slack_notification(
     if shadow_mode:
         shadow_line = ":ghost: *SHADOW MODE* (scoring only, no CRM writes)\n"
         if score >= 70:
-            shadow_line += ":white_check_mark: _Would auto-create deal_\n"
+            if existing_deal:
+                shadow_line += ":memo: _Would log score progression on existing deal (no new deal created)_\n"
+            else:
+                shadow_line += ":white_check_mark: _Would auto-create deal_\n"
         elif score >= 50:
-            shadow_line += ":warning: _Would route to Needs Review_\n"
+            if existing_deal:
+                shadow_line += ":memo: _Would log score progression on existing deal_\n"
+            else:
+                shadow_line += ":warning: _Would route to Needs Review_\n"
         else:
             shadow_line += ":no_entry_sign: _Would not create deal_\n"
 
@@ -1387,6 +1393,8 @@ def _send_slack_notification(
     followup_line = ""
     if existing_deal:
         followup_line = f":repeat: *Follow-up call* (existing deal: {existing_deal.get('deal_name', '?')}, stage: {existing_deal.get('stage', '?')})\n"
+        # Override the recommendation display for follow-ups (no auto-create happens)
+        rec = "Follow-up scored (no new deal)"
     if previous_scores:
         prev_scores_str = " > ".join(str(p["score"]) for p in previous_scores)
         call_num = len(previous_scores) + 1
@@ -3371,8 +3379,15 @@ def _poll_all_connections():
                                 logger.info(f"[Poller] Zoom transcript too short ({len(text)} chars), skipping: {rec.get('title')}")
                                 _mark_processed(zoom_tid, conn_name, status="skipped_short")
                                 continue
+                            # Meeting-title dedup: skip if another transcript ID for the same meeting was already scored
+                            zoom_title = rec.get("title", "Zoom Call")
+                            zoom_date = rec.get("date", "")
+                            if _meeting_already_scored(zoom_title, zoom_date, conn_name):
+                                logger.info(f"[Poller] Zoom meeting '{zoom_title}' already scored under another recording ID, marking as success and skipping")
+                                _mark_processed(zoom_tid, conn_name, status="success")
+                                continue
                             # Score it
-                            metadata = {"title": rec.get("title", "Zoom Call"), "date": rec.get("date", ""), "source": "zoom"}
+                            metadata = {"title": zoom_title, "date": zoom_date, "source": "zoom"}
                             logger.info(f"[Poller] Scoring Zoom transcript: {rec.get('title')} ({zoom_tid}) for {conn_name}")
                             try:
                                 _process_transcript_text(text, metadata, conn)
