@@ -3944,6 +3944,55 @@ def debug_retry_attio_create(connection_name: str = "My Team", meeting_title: st
 
 
 @app.get("/debug/attio-diagnostic")
+@app.get("/debug/attio-companies-schema")
+def debug_attio_companies_schema(connection_name: str = "My Team"):
+    """List Companies object attributes + lifecycle_stage statuses if it exists."""
+    import requests as req_lib
+    from config import ATTIO_BASE_URL
+    all_conns = connections.list_connections_full()
+    conn = next((c for c in all_conns if c.get("name") == connection_name), None)
+    if not conn:
+        return {"error": "Connection not found"}
+    crm_key = conn.get("crm_api_key", "")
+    headers = {"Authorization": f"Bearer {crm_key}"}
+    try:
+        attrs_resp = req_lib.get(f"{ATTIO_BASE_URL}/objects/companies/attributes", headers=headers, timeout=15)
+        attrs = attrs_resp.json().get("data", []) if attrs_resp.ok else []
+        attribute_list = [
+            {
+                "slug": a.get("api_slug") or a.get("slug"),
+                "title": a.get("title"),
+                "type": a.get("type"),
+                "id": (a.get("id") or {}).get("attribute_id") if isinstance(a.get("id"), dict) else None,
+                "is_required": a.get("is_required"),
+            }
+            for a in attrs
+        ]
+        # Look for lifecycle_stage or any status-typed attribute
+        lifecycle_attr = next(
+            (a for a in attrs if (a.get("api_slug") or a.get("slug")) in ("lifecycle_stage", "lifecycle", "company_lifecycle_stage", "stage")),
+            None,
+        )
+        lifecycle_statuses = []
+        if lifecycle_attr:
+            attr_id = (lifecycle_attr.get("id") or {}).get("attribute_id")
+            opts_resp = req_lib.get(
+                f"{ATTIO_BASE_URL}/objects/companies/attributes/{attr_id}/statuses",
+                headers=headers,
+                timeout=15,
+            )
+            if opts_resp.ok:
+                lifecycle_statuses = [s.get("title") for s in opts_resp.json().get("data", []) if s.get("title")]
+        return {
+            "attributes": attribute_list,
+            "lifecycle_attribute_found": lifecycle_attr is not None,
+            "lifecycle_attribute_slug": (lifecycle_attr.get("api_slug") or lifecycle_attr.get("slug")) if lifecycle_attr else None,
+            "lifecycle_statuses": lifecycle_statuses,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def debug_attio_diagnostic(connection_name: str = "My Team", company_name: str = "Test Co"):
     """Diagnose Attio integration: auth check, find_deal test, full create_deal dry run."""
     import attio_client
