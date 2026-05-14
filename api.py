@@ -1412,10 +1412,9 @@ def _send_slack_notification(
         if isinstance(fw_scores.get(cat), dict):
             assessment = fw_scores[cat].get("assessment", "")
         if assessment:
-            # Truncate at last complete word boundary, not mid-word
-            if len(assessment) > 150:
-                truncated = assessment[:150].rsplit(' ', 1)[0]
-                assessment = truncated
+            # Truncate at last complete word boundary with ellipsis when actually cut
+            if len(assessment) > 280:
+                assessment = assessment[:280].rsplit(' ', 1)[0] + "..."
             breakdown_lines.append(f"  {label}: *{score_str}* - {assessment}")
         else:
             breakdown_lines.append(f"  {label}: *{score_str}*")
@@ -1523,8 +1522,8 @@ def _send_teams_notification(
         if isinstance(fw_scores.get(cat), dict):
             assessment = fw_scores[cat].get("assessment", "")
         if assessment:
-            if len(assessment) > 150:
-                assessment = assessment[:150].rsplit(' ', 1)[0]
+            if len(assessment) > 280:
+                assessment = assessment[:280].rsplit(' ', 1)[0] + "..."
             breakdown_lines.append(f"- **{label}:** {score_str} - {assessment}")
         else:
             breakdown_lines.append(f"- **{label}:** {score_str}")
