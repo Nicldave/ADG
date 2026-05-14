@@ -1003,6 +1003,20 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
             f"({recommendation})"
         )
 
+        # 3b. Late-stage duplicate scoring dedup: if the same deal_name was scored within
+        # the last 30 minutes on this connection, this is a duplicate meeting capture
+        # (Fireflies extension + Zoom integration both creating transcripts of the same call).
+        # Skip CRM writes and notifications to avoid double-firing.
+        suggested_deal_name = score_result.get("deal_name_suggestion", "")
+        dup = _recent_duplicate_score(suggested_deal_name, conn.get("name", "Default"))
+        if dup:
+            logger.info(
+                f"[{conn['name']}] Deal '{suggested_deal_name}' was just scored {dup['created_at']} "
+                f"(score: {dup['score']}). Treating this run as a duplicate of the same meeting; skipping CRM writes and notifications."
+            )
+            _mark_processed(transcript_id, conn.get("name", "Default"), score=score, status="success")
+            return
+
         # 4. Check for existing deal and previous scores (follow-up intelligence)
         existing_deal = _find_existing_deal(company_name, crm_name, crm_key)
         previous_scores = _get_previous_scores(company_name)
@@ -1101,6 +1115,41 @@ def _process_fireflies_transcript(transcript_id: str, conn: dict):
         else:
             _increment_retry(transcript_id, conn_name)
             logger.info(f"Transcript {transcript_id} attempt {retry_count + 1}/3 failed, will retry next cycle")
+
+
+def _recent_duplicate_score(deal_name: str, connection_name: str, within_minutes: int = 30) -> Optional[dict]:
+    """
+    Detect if this exact deal_name was just scored (within the cooldown window).
+    Used as final-stage dedup when Fireflies generates multiple transcript IDs for the same meeting,
+    or when the Chrome extension and Zoom integration both produce transcripts.
+    Returns the existing scored_deal row if a duplicate is detected, else None.
+    """
+    if not deal_name or not database.is_available():
+        return None
+    conn = database.get_conn()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, deal_name, score, created_at
+               FROM scored_deals
+               WHERE deal_name = %s
+                 AND metadata->>'connection_name' = %s
+                 AND created_at > NOW() - INTERVAL '%s minutes'
+               ORDER BY created_at DESC LIMIT 1""",
+            (deal_name, connection_name, within_minutes),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if row:
+            return {"id": row[0], "deal_name": row[1], "score": row[2], "created_at": row[3].isoformat()}
+        return None
+    except Exception as e:
+        logger.warning(f"Duplicate-score check failed: {e}")
+        return None
+    finally:
+        database.put_conn(conn)
 
 
 def _get_previous_scores(company_name: str) -> list:
@@ -2181,6 +2230,17 @@ def _process_transcript_text(text: str, metadata: dict, conn: dict):
         logger.info(
             f"[{conn['name']}] '{metadata.get('title')}' scored {score}/100 ({recommendation})"
         )
+
+        # Late-stage duplicate scoring dedup (same as Fireflies path).
+        # Same deal_name in the last 30 min = duplicate transcript capture.
+        suggested_deal_name = score_result.get("deal_name_suggestion", "")
+        dup = _recent_duplicate_score(suggested_deal_name, conn.get("name", "Default"))
+        if dup:
+            logger.info(
+                f"[{conn['name']}] Deal '{suggested_deal_name}' was just scored {dup['created_at']} "
+                f"(score: {dup['score']}). Skipping duplicate CRM writes and notifications."
+            )
+            return
 
         # Check for existing deal and previous scores (follow-up intelligence)
         existing_deal = _find_existing_deal(company_name, crm_name, crm_key)
