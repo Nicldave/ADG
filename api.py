@@ -1407,15 +1407,21 @@ def _send_slack_notification(
             ev_count = data.get("evidence_count", 0)
             depth_note = f" (depth: {ev_count} signal{'s' if ev_count != 1 else ''}, capped at {effective_max})"
         score_str = f"{data['score']}/{data['max']}{depth_note}"
-        # Get the assessment from the analysis framework_scores
-        assessment = ""
+        # Prefer the short headline for Slack. Fall back to first sentence of assessment for
+        # backwards compatibility with scored deals analyzed before headline was introduced.
+        slack_line = ""
         if isinstance(fw_scores.get(cat), dict):
-            assessment = fw_scores[cat].get("assessment", "")
-        if assessment:
-            # Truncate at last complete word boundary with ellipsis when actually cut
-            if len(assessment) > 280:
-                assessment = assessment[:280].rsplit(' ', 1)[0] + "..."
-            breakdown_lines.append(f"  {label}: *{score_str}* - {assessment}")
+            slack_line = (fw_scores[cat].get("headline") or "").strip()
+            if not slack_line:
+                full = (fw_scores[cat].get("assessment") or "").strip()
+                if full:
+                    # First sentence only, never mid-word
+                    first_sentence = full.split(". ")[0]
+                    if not first_sentence.endswith("."):
+                        first_sentence += "."
+                    slack_line = first_sentence[:280]
+        if slack_line:
+            breakdown_lines.append(f"  {label}: *{score_str}* - {slack_line}")
         else:
             breakdown_lines.append(f"  {label}: *{score_str}*")
     breakdown_block = "\n".join(breakdown_lines) if breakdown_lines else "N/A"
@@ -1518,13 +1524,19 @@ def _send_teams_notification(
             ev_count = data.get("evidence_count", 0)
             depth_note = f" (depth: {ev_count} signal{'s' if ev_count != 1 else ''}, capped at {effective_max})"
         score_str = f"{data['score']}/{data['max']}{depth_note}"
-        assessment = ""
+        # Prefer the short headline; fall back to first sentence of assessment for older records.
+        teams_line = ""
         if isinstance(fw_scores.get(cat), dict):
-            assessment = fw_scores[cat].get("assessment", "")
-        if assessment:
-            if len(assessment) > 280:
-                assessment = assessment[:280].rsplit(' ', 1)[0] + "..."
-            breakdown_lines.append(f"- **{label}:** {score_str} - {assessment}")
+            teams_line = (fw_scores[cat].get("headline") or "").strip()
+            if not teams_line:
+                full = (fw_scores[cat].get("assessment") or "").strip()
+                if full:
+                    first_sentence = full.split(". ")[0]
+                    if not first_sentence.endswith("."):
+                        first_sentence += "."
+                    teams_line = first_sentence[:280]
+        if teams_line:
+            breakdown_lines.append(f"- **{label}:** {score_str} - {teams_line}")
         else:
             breakdown_lines.append(f"- **{label}:** {score_str}")
     breakdown_block = "\n".join(breakdown_lines) if breakdown_lines else "N/A"

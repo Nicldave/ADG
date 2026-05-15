@@ -348,10 +348,21 @@ def _build_deal_properties(
         for s in analysis.get("next_steps", [])[:3]
     ]
 
-    score_breakdown = "\n".join(
-        f"  {k}: {v['score']}/{v['max']}"
-        for k, v in score_result.get("breakdown", {}).items()
-    )
+    # Build per-category score breakdown with full headline + assessment
+    fw_scores_for_desc = analysis.get("framework_scores", {}) if isinstance(analysis, dict) else {}
+    breakdown_sections = []
+    for k, v in score_result.get("breakdown", {}).items():
+        label = v.get("label", k)
+        section = f"  {label}: {v['score']}/{v['max']}"
+        cat_data = fw_scores_for_desc.get(k, {}) if isinstance(fw_scores_for_desc.get(k), dict) else {}
+        headline = (cat_data.get("headline") or "").strip()
+        full_assessment = (cat_data.get("assessment") or "").strip()
+        if headline:
+            section += f"\n    {headline}"
+        if full_assessment and full_assessment != headline:
+            section += f"\n    {full_assessment}"
+        breakdown_sections.append(section)
+    score_breakdown = "\n\n".join(breakdown_sections) if breakdown_sections else ""
 
     objections_list = [
         f"- \"{o.get('objection', '')}\" → {'Resolved' if o.get('resolved') else 'Unresolved'}"

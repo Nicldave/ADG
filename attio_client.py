@@ -429,16 +429,35 @@ def create_deal(
     if metadata:
         touchpoints = metadata.get("touchpoints", 1)
 
-    # Build a rich Deal Intelligence summary that maps to existing native fields
+    # Build a rich Deal Intelligence summary that maps to existing native fields.
+    # This is THE artifact reps see on the deal record. Include the full per-category
+    # rationale (headline + assessment) so the detailed reasoning lives here, not in
+    # the truncated Slack message.
     framework_name = score_result.get("framework", "custom").upper()
+    fw_scores = analysis.get("framework_scores", {}) if isinstance(analysis, dict) else {}
+    breakdown_lines = []
+    for k, d in score_result.get("breakdown", {}).items():
+        label = d.get("label", k)
+        score_str = f"{d['score']}/{d['max']}"
+        cat_data = fw_scores.get(k, {}) if isinstance(fw_scores.get(k), dict) else {}
+        headline = (cat_data.get("headline") or "").strip()
+        full_assessment = (cat_data.get("assessment") or "").strip()
+        section = f"{label}: {score_str}"
+        if headline:
+            section += f"\n  {headline}"
+        if full_assessment and full_assessment != headline:
+            section += f"\n  {full_assessment}"
+        breakdown_lines.append(section)
+    full_breakdown = "\n\n".join(breakdown_lines) if breakdown_lines else breakdown_text
+
     deal_intel_text = (
         f"Score: {score_result['total_score']}/100 ({framework_name})\n"
         f"Recommendation: {recommendation.replace('_', ' ').title()}\n"
         f"Auto-Created: Yes | Rep: {rep_name or 'Unknown'} | Touchpoint: #{touchpoints}\n"
         f"\n"
-        f"BREAKDOWN: {breakdown_text}\n"
+        f"BREAKDOWN:\n{full_breakdown}\n"
         f"\n"
-        f"INSIGHT: {score_result.get('key_insight', 'N/A')}"
+        f"KEY INSIGHT: {score_result.get('key_insight', 'N/A')}"
     )
 
     # Native fields (likely to exist on most Attio workspaces)

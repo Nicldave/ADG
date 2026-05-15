@@ -162,10 +162,22 @@ def _build_framework_output_format(framework_key: str) -> str:
     categories = fw["categories"]
 
     # Build the framework_scores object dynamically
+    # Each category returns:
+    #   - score: numeric
+    #   - evidence: verbatim quotes (depth multiplier signal)
+    #   - headline: ONE short sentence, max ~18 words, designed to fit in a Slack line.
+    #               The TL;DR of the category. Never truncated.
+    #   - assessment: full rationale, 2-5 sentences, includes specifics and reasoning.
+    #                 Lives on the CRM deal record (deal_intelligence in Attio) and the web view.
     score_fields = []
     for key, cat in categories.items():
         score_fields.append(
-            f'    "{key}": {{"score": 0-{cat["weight"]}, "evidence": ["verbatim quotes - provide 1 if barely mentioned, 2-3 if discussed in moderate depth, 4+ if thoroughly explored with specifics"], "assessment": "one sentence"}}'
+            f'    "{key}": {{'
+            f'"score": 0-{cat["weight"]}, '
+            f'"evidence": ["verbatim quotes - provide 1 if barely mentioned, 2-3 if discussed in moderate depth, 4+ if thoroughly explored with specifics"], '
+            f'"headline": "ONE short sentence, max 18 words, capturing the verdict on this category. Designed for a Slack line, never truncated.", '
+            f'"assessment": "Full rationale, 2-5 sentences. Includes specifics, named people, quoted figures where relevant. This is the long-form record that lives on the deal."'
+            f'}}'
         )
     scores_json = ",\n".join(score_fields)
 
